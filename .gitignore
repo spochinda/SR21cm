@@ -1,0 +1,7 @@
+IC/
+notebooks/*
+outputs/
+plots/*
+trained_models/model_1/checkpoints/*
+!plots/critic_model.png
+!plots/generator_model.png
