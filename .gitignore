@@ -5,3 +5,6 @@ plots/*
 trained_models/model_1/*
 !plots/critic_model.png
 !plots/generator_model.png
+slurm_run
+*.err
+*.out

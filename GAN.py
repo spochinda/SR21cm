@@ -1,3 +1,4 @@
+print("Inside GAN.py", flush=True)
 import numpy as np
 import tensorflow as tf
 from scipy.io import loadmat
@@ -11,6 +12,8 @@ import pickle
 
 path = os.getcwd()
 
+
+print("Available devices: ", tf.config.list_physical_devices(), flush=True)
 
 """
 #i=0, i*24:(i+1)*24 = 0:24, 
@@ -600,7 +603,7 @@ critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=
 
 
 
-Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1002)))
+Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
 #dataset = tf.data.Dataset.from_generator(Data.generator_func,
 #                                         args=(True, 2, True),
 #                                         output_signature=(
@@ -609,12 +612,12 @@ Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1002)))
 #                                             tf.TensorSpec(shape=(128,128,128,1), dtype=tf.float32),
 #                                             tf.TensorSpec(shape=(64,64,64,1), dtype=tf.float32)
 #                                             ))
-dataset = Data.data(augment=True, augments=2, low_res=True)
+dataset = Data.data(augment=True, augments=9, low_res=True)
 dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
-batches = dataset.batch(2)
+batches = dataset.batch(4)
 
-
+print("Number of batches: ", len(list(batches)), flush=True)
 
 
 def standardize(data, data_stats):
@@ -625,7 +628,7 @@ def standardize(data, data_stats):
         if m==0 and v==0:
             mean[i] = 0
             var[i] = 1
-            print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
+            #print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
     std = var**0.5
     return (data - mean) / std
 
@@ -644,15 +647,15 @@ if resume:
     ckpt.restore(manager.latest_checkpoint)
     weights_after = generator.model.get_weights()
     are_weights_different = any([not np.array_equal(w1, w2) for w1, w2 in zip(weights_before, weights_after)])
-    print("Are weights different after restoring from checkpoint: ", are_weights_different)
+    print("Are weights different after restoring from checkpoint: ", are_weights_different, flush=True)
 
     if (os.path.exists(model_path+"/losses.pkl")==False) or (os.path.exists(model_path+"/checkpoints")==False) or (are_weights_different==False):
         assert False, "Resume=True: Checkpoints directory or losses file does not exist or weights are unchanged after restoring, cannot resume training."
 else:
-    print("Initializing from scratch.")
+    print("Initializing from scratch.", flush=True)
     if os.path.exists(model_path+"/losses.pkl") or os.path.exists(model_path+"/checkpoints"):
         assert False, "Resume=False: Loss file or checkpoints directory already exists, exiting..."
-    print("Creating loss file...")
+    print("Creating loss file...", flush=True)
     with open(model_path+"/losses.pkl", "wb") as f:
         generator_losses_epoch = []
         critic_losses_epoch = []
@@ -661,7 +664,7 @@ else:
 
 
 
-
+print("Starting training...", flush=True)
 for e in range(epochs):
     start = time.time()
 
@@ -683,7 +686,7 @@ for e in range(epochs):
             gen_loss = generator.train_step_generator(T21_lr_standardized, T21_standardized, delta, vbv_standardized, generator_optimizer, critic)
             generator_losses.append(gen_loss)
         
-        print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start))
+        print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
     
     #save losses
     with open(model_path+"/losses.pkl", "rb") as f: # Open the file in read mode and get data
@@ -697,18 +700,18 @@ for e in range(epochs):
     
     #checkpoint
     #if e%2 == 0:
-    print("Saving checkpoint...")
+    print("Saving checkpoint...", flush=True)
     manager.save()
-    print("Checkpoint saved!")
+    print("Checkpoint saved!", flush=True)
 
-    print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)))
+    print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
 
 
 
 
 with open(model_path+"/losses.pkl", "rb") as f:
     data = pickle.load(f)
-print("Saved loss history: ", data)
+print("Saved loss history: ", data, flush=True)
 
 weights_after = generator.model.get_weights()
 print("weights[0] after loop: ", weights_after[0])
