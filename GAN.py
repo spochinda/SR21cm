@@ -561,7 +561,6 @@ class Generator(tf.keras.Model):
 generator = Generator()
 critic = Critic()
 
-
 #lbda=10
 n_critic = 2
 epochs = 10
