@@ -4,6 +4,7 @@ import tensorflow as tf
 from scipy.io import loadmat
 from scipy.ndimage import convolve
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from matplotlib.animation import FuncAnimation, PillowWriter
 import tqdm
 import time
@@ -224,75 +225,6 @@ dataset = tf.data.Dataset.from_generator(Data.generator_func,
                                              tf.TensorSpec(shape=(128,128,128,1), dtype=tf.float32),
                                              tf.TensorSpec(shape=(64,64,64,1), dtype=tf.float32)
                                              ))
-
-# Take one batch from the dataset
-#one_batch = dataset.batch(8)
-#take = one_batch.take(1)
-#print("take 1: ", take)
-# Iterate over the batch
-#for data1, data2, data3, data4 in one_batch:
-#    print("data1 shape:", data1.shape)
-
-   
-"""
-
-
-for i,ID in enumerate(rng):
-    #load initial conditions
-    delta[i*24:(i+1)*24,:,:,:] = augment_data(loadmat(path + '/IC/delta'+str(ID)+'.mat')['delta'])
-    #delta[i,:,:,:] = loadmat(path + '/IC/delta'+str(ID)+'.mat')['delta']
-    vbv[i*24:(i+1)*24,:,:,:] = augment_data(loadmat(path + '/IC/vbv'+str(ID)+'.mat')['vbv'])
-    #vbv[i,:,:,:] = loadmat(path + '/IC/vbv'+str(ID)+'.mat')['vbv']
-    for j,file in enumerate(files):
-        data = loadmat(path+'/outputs/'+file)["Tlin"]
-        #T21_target[i,:,:,:,j] = data
-        T21_target[i*24:(i+1)*24,:,:,:,j] = augment_data(data)
-        #T21_train[i,:,:,:,j] = data["Tlin"][:64,:64,:64]
-        #temp = tf.cast(data.reshape(1,128,128,128,1), dtype=tf.float32)        
-        #test[i,:,:,:,j] = tf.keras.layers.Conv3D(filters=1, kernel_size=(2, 2, 2), 
-        #                                    kernel_initializer=tf.keras.initializers.constant(value=1/8),
-        #                                    use_bias=False, bias_initializer=None, #tf.keras.initializers.Constant(value=0.1),
-        #                                    strides=(2, 2, 2), padding='valid', data_format="channels_last", 
-        #                                    activation=None,
-        #                                    )(temp).numpy().reshape(64,64,64)
-    
-
- 
-print(T21_target.shape, T21_target)
-#print("original: ", data["Tlin"].shape)
-#print("augmented: ", augment_data(data["Tlin"]))
-
-
-for j in range(len(rng)):
-    fig,axes = plt.subplots(2,6,figsize=(20,9))
-    for i in range(6,12):
-        #temp1 = tf.cast(T21_target[j,:,:,:,i].reshape(1,128,128,128,1), dtype=tf.float32)        
-        #temp2 = tf.keras.layers.Conv3D(filters=1, kernel_size=(2, 2, 2), 
-        #                                    kernel_initializer=tf.keras.initializers.constant(value=1/8),
-        #                                    use_bias=False, bias_initializer=None, #tf.keras.initializers.Constant(value=0.1),
-        #                                    strides=(2, 2, 2), padding='valid', data_format="channels_last", 
-        #                                    activation=None
-        #                                    )(temp1)
-        #test[j,:,:,:,i] = temp2.numpy().reshape(64,64,64)
-
-        axes[0,i-6].imshow(T21_target[j,:,:,30,i], )
-        axes[0,i-6].set_title("z={0}, Target Mean: {1:.2f}".format(z[i], np.mean(T21_target[j,:,:,30,i])))
-        axes[1,i-6].imshow(test[j,:,:,30,i], )
-        axes[1,i-6].set_title("z={0}, Conv Mean: {1:.2f}".format(z[i], np.mean(test[j,:,:,30,i])))
-    plt.show()
-
-print("shapes loaded: ", T21_target.shape,T21_train.shape, delta.shape, vbv.shape)
-
-T21_target = tf.expand_dims(input=tf.cast(T21_target[:,:,:,:,10], dtype=tf.float32), axis=4) #take 10th redshift slice
-T21_train = tf.expand_dims(input=tf.cast(T21_train[:,:,:,:,10], dtype=tf.float32), axis=4) #take 10th redshift slice
-
-
-
-delta = tf.expand_dims(input=tf.cast(delta,dtype=tf.float32), axis=4)
-vbv = tf.expand_dims(input=tf.cast(vbv,dtype=tf.float32), axis=4)
-
-
-"""
 #2. Define critic
 class Critic(tf.keras.Model):
     def __init__(self):
@@ -358,7 +290,7 @@ class Critic(tf.keras.Model):
             critic_output = self.call(xhat, IC_delta, IC_vbv)
         gradients = tape.gradient(critic_output, xhat)
         l2_norm = tf.math.reduce_euclidean_norm(gradients, axis=[1,2,3])
-        gp = 1. * tf.square(l2_norm - 1)
+        gp = 1e-2 * tf.square(l2_norm - 1)
         
         #plotting: need to remove tf.function decorator to plot histograms and imshows (e is epoch and i is batch number)
         if False:
@@ -560,13 +492,72 @@ class Generator(tf.keras.Model):
     def call(self, T21_train, IC_delta, IC_vbv):
         return self.model(inputs=[T21_train, IC_delta, IC_vbv])
 
+def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
+    fig = plt.figure(tight_layout=True, figsize=(15,10))
+    gs = gridspec.GridSpec(len(IC_seeds)+1, 5, figure=fig)
+    ax_loss = fig.add_subplot(gs[0,:])
+
+    #loss row
+    ax_loss.plot(range(len(generator_losses_epoch)), generator_losses_epoch, label="generator")
+    ax_loss.plot(range(len(critic_losses_epoch)), critic_losses_epoch, label="critic")
+    ax_loss.plot(range(len(gradient_penalty_epoch)), gradient_penalty_epoch, label="gradient penalty")
+    ax_loss.set_xlabel("Epoch")
+    ax_loss.set_ylabel("Loss")
+    ax_loss.legend()
+
+    # Validation data
+    Data_validation = DataManager(path, redshifts=[redshift,], IC_seeds=IC_seeds)
+    T21, delta, vbv, T21_lr = Data_validation.data(augment=False, augments=9, low_res=True) 
+    T21_standardized = standardize(T21, T21_lr)
+    T21_lr_standardized = standardize(T21_lr, T21_lr)
+    vbv_standardized = standardize(vbv, vbv)
+    generated_boxes = generator(T21_lr_standardized, delta, vbv_standardized).numpy()
+
+    for i,IC in enumerate(IC_seeds):
+        # Plot histograms
+        ax_hist = fig.add_subplot(gs[i+1,0])
+        ax_hist.hist(generated_boxes[i, :, :, :, 0].flatten(), bins=100, alpha=0.5, label="generated", density=True)
+        ax_hist.hist(T21_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="real", density=True)
+        ax_hist.set_title("Histograms of standardized data")
+        ax_hist.legend()
+
+        # Plot real and generated data
+        ax_gen = fig.add_subplot(gs[i+1,1])
+        T21_std = np.std(T21_standardized[i, :, :, :, 0].numpy().flatten())
+        ax_gen.imshow(generated_boxes[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_gen.set_title("Generated")
+        ax_real = fig.add_subplot(gs[i+1,2])
+        ax_real.imshow(T21_standardized[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_real.set_title("Real")
+
+        if plot_slice:
+            ax_delta = fig.add_subplot(gs[i+1,3])
+            delta_std = np.std(delta[i, :, :, :, 0].numpy().flatten())
+            ax_delta.imshow(delta[i, :, :, 10, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
+            ax_delta.set_title("Delta IC ID={0}".format(IC))
+            ax_vbv = fig.add_subplot(gs[i+1,4])
+            vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
+            ax_vbv.imshow(vbv_standardized[i, :, :, 10, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
+            ax_vbv.set_title("Vbv IC ID={0}".format(IC))
+        else: #histogram delta and vbv_standardised
+            ax_delta = fig.add_subplot(gs[i+1,3])
+            ax_delta.hist(delta[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
+            ax_delta.set_title("Histogram delta IC ID={0}".format(IC))
+            ax_delta.legend()
+            ax_vbv = fig.add_subplot(gs[i+1,4])
+            ax_vbv.hist(vbv_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="vbv", density=True)
+            ax_vbv.set_title("Histogram vbv IC ID={0}".format(IC))
+            ax_vbv.legend()
+
+    # Save figure
+    plt.savefig(model_path+"/loss_history_and_validation_epoch_{0}.png".format(len(generator_losses_epoch)))
 
 generator = Generator()
 critic = Critic()
 
 #lbda=10
-n_critic = 2
-epochs = 10
+n_critic = 10
+epochs = 200
 learning_rate=1e-4
 beta_1 = 0.5
 beta_2 = 0.999
@@ -634,13 +625,13 @@ def standardize(data, data_stats):
 
 
 
-model_path = path+"/trained_models/model_1"
+model_path = path+"/trained_models/model_2"
 ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.model, 
                            generator_optimizer=generator_optimizer, critic_optimizer=critic_optimizer,
                            )
 manager = tf.train.CheckpointManager(ckpt, model_path+"/checkpoints", max_to_keep=5)
 
-resume = False
+resume = True
 
 if resume:
     weights_before = generator.model.get_weights()
@@ -704,17 +695,30 @@ for e in range(epochs):
     manager.save()
     print("Checkpoint saved!", flush=True)
 
-    print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
+    #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
+    #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
+    if e%1 == 0:
+        plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
 
+
+        
+        
+
+
+        
+        
+
+
+    print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
+    break
 
 
 
 with open(model_path+"/losses.pkl", "rb") as f:
-    data = pickle.load(f)
-print("Saved loss history: ", data, flush=True)
+    generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch = pickle.load(f)
+#print last 10 losses and total number of epochs
+print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
 
-weights_after = generator.model.get_weights()
-print("weights[0] after loop: ", weights_after[0])
 
 """
 
