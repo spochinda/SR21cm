@@ -1,8 +1,8 @@
-print("Inside GAN.py", flush=True)
+import argparse
+import itertools
 import numpy as np
 import tensorflow as tf
 from scipy.io import loadmat
-from scipy.ndimage import convolve
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 from matplotlib.animation import FuncAnimation, PillowWriter
@@ -10,6 +10,14 @@ import tqdm
 import time
 import os
 import pickle
+
+
+print("Inside GAN.py", flush=True)
+
+parser = argparse.ArgumentParser(description="GAN to learn simulation cubes from initial conditions and smaller cubes")
+parser.add_argument('--index', type=int, default=0, help='An index from 0 to 20 to pick a set of learning rates and penalty strengths')
+args = parser.parse_args()
+index = args.index
 
 path = os.getcwd()
 
@@ -227,33 +235,36 @@ dataset = tf.data.Dataset.from_generator(Data.generator_func,
                                              ))
 #2. Define critic
 class Critic(tf.keras.Model):
-    def __init__(self):
+    def __init__(self,kernel_sizes=[7,5,3,1],lbda=1e-2):
         super(Critic, self).__init__()
+        self.kernel_sizes = kernel_sizes
+        self.crop = int((max(self.kernel_sizes)-1))
+        self.lbda = lbda
         self.build_critic_model()
 
     def build_critic_model(self):
-        conv1 = tf.keras.layers.Conv3D(filters=8, kernel_size=(7, 7, 7), 
+        conv1 = tf.keras.layers.Conv3D(filters=8, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(2, 2, 2), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.LeakyReLU(alpha=0.1)
                                             )
         
-        conv2 = tf.keras.layers.Conv3D(filters=16, kernel_size=(5, 5, 5), 
+        conv2 = tf.keras.layers.Conv3D(filters=16, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(1, 1, 1), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.LeakyReLU(alpha=0.1)
                                             )
         
-        conv3 = tf.keras.layers.Conv3D(filters=32, kernel_size=(3, 3, 3), 
+        conv3 = tf.keras.layers.Conv3D(filters=32, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(2, 2, 2), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.LeakyReLU(alpha=0.1)
                                             )
         
-        conv4 = tf.keras.layers.Conv3D(filters=64, kernel_size=(1, 1, 1), 
+        conv4 = tf.keras.layers.Conv3D(filters=64, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(1, 1, 1), padding='valid', data_format="channels_last", 
@@ -272,9 +283,9 @@ class Critic(tf.keras.Model):
     def critic_loss(self, T21_big, IC_delta, IC_vbv, generated_boxes):
         #wasserstein loss
         # Generate a batch of fake big boxes using the generator network
-        T21_big = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(T21_big)
-        IC_delta = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_delta)
-        IC_vbv = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_vbv)
+        T21_big = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(T21_big)
+        IC_delta = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_delta)
+        IC_vbv = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_vbv)
 
         # Evaluate the critic network on the real big boxes and the fake big boxes
         W_real = self.call(T21_big, IC_delta, IC_vbv)
@@ -290,7 +301,7 @@ class Critic(tf.keras.Model):
             critic_output = self.call(xhat, IC_delta, IC_vbv)
         gradients = tape.gradient(critic_output, xhat)
         l2_norm = tf.math.reduce_euclidean_norm(gradients, axis=[1,2,3])
-        gp = 1e-2 * tf.square(l2_norm - 1)
+        gp = self.lbda * tf.square(l2_norm - 1)
         
         #plotting: need to remove tf.function decorator to plot histograms and imshows (e is epoch and i is batch number)
         if False:
@@ -501,6 +512,7 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     ax_loss.plot(range(len(generator_losses_epoch)), generator_losses_epoch, label="generator")
     ax_loss.plot(range(len(critic_losses_epoch)), critic_losses_epoch, label="critic")
     ax_loss.plot(range(len(gradient_penalty_epoch)), gradient_penalty_epoch, label="gradient penalty")
+    ax_loss.set_title("lambda={0}, learning rate={1}".format(lbda, learning_rate))
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Loss")
     ax_loss.legend()
@@ -550,17 +562,28 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
             ax_vbv.legend()
 
     # Save figure
-    plt.savefig(model_path+"/loss_history_and_validation_epoch_{0}.png".format(len(generator_losses_epoch)))
+    plt.savefig(model_path+"/loss_history_and_validation_epoch_{0}_lambda_{1}_lr_{2}.png".format(len(generator_losses_epoch), lbda, learning_rate))
 
-generator = Generator()
-critic = Critic()
 
-#lbda=10
 n_critic = 10
 epochs = 200
-learning_rate=1e-4
 beta_1 = 0.5
 beta_2 = 0.999
+learning_rate=np.logspace(-4,-1,4) #1e-4
+lbda= np.logspace(-4,0,5) #1e-2
+
+
+
+combinations = list(itertools.product(lbda, learning_rate))
+lbda,learning_rate = combinations[index]
+
+print("Params: ", lbda, learning_rate, flush=True)
+
+
+generator = Generator()
+critic = Critic(lbda=lbda)
+
+
 
 generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
@@ -625,13 +648,16 @@ def standardize(data, data_stats):
 
 
 
-model_path = path+"/trained_models/model_2"
+model_path = path+"/trained_models/model_{0}".format(index)
+#make model directory if it doesn't exist:
+if os.path.exists(model_path)==False:
+    os.mkdir(model_path)
 ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.model, 
                            generator_optimizer=generator_optimizer, critic_optimizer=critic_optimizer,
                            )
 manager = tf.train.CheckpointManager(ckpt, model_path+"/checkpoints", max_to_keep=5)
 
-resume = True
+resume = False
 
 if resume:
     weights_before = generator.model.get_weights()
@@ -697,7 +723,7 @@ for e in range(epochs):
 
     #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
-    if e%1 == 0:
+    if e%10 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
 
 
