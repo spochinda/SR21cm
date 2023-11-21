@@ -10,7 +10,8 @@ import tqdm
 import time
 import os
 import pickle
-
+#add in second inception module (done)
+#layer normalisation
 
 print("Inside GAN.py", flush=True)
 
@@ -354,8 +355,9 @@ class Critic(tf.keras.Model):
         return x_out_model
 
 class InceptionLayer(tf.keras.layers.Layer):
-    def __init__(self, filters_1x1x1_7x7x7=6, filters_7x7x7=6, filters_1x1x1_5x5x5=6, filters_5x5x5=6, filters_1x1x1_3x3x3=6, filters_3x3x3=6, filters_1x1x1=6):
+    def __init__(self, input_channels=1, filters_1x1x1_7x7x7=6, filters_7x7x7=6, filters_1x1x1_5x5x5=6, filters_5x5x5=6, filters_1x1x1_3x3x3=6, filters_3x3x3=6, filters_1x1x1=6):
         super(InceptionLayer, self).__init__()
+        self.input_channels = input_channels
         self.conv_1x1x1_7x7x7 = tf.keras.layers.Conv3D(filters=filters_1x1x1_7x7x7, kernel_size=(1, 1, 1),
                                                        kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                                        bias_initializer=tf.keras.initializers.Constant(value=0.1),
@@ -409,6 +411,13 @@ class InceptionLayer(tf.keras.layers.Layer):
         self.crop_x = tf.keras.layers.Cropping3D(cropping=(3, 3, 3),data_format="channels_last")#(x[:,:,:,:,0:1])
         #self.tile_x = tf.keras.layers.Lambda(lambda x: tf.tile(x, [1, 1, 1, 1, x_out.shape[-1]]))(x_out_)
 
+        self.conv_1x1x1_reduce_channels = tf.keras.layers.Conv3D(filters=filters_7x7x7+filters_5x5x5+filters_3x3x3+filters_1x1x1, kernel_size=(1, 1, 1), #warning: number of filters not generalized
+                                                 kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                                 bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                                 strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                                 activation=None #tf.keras.layers.LeakyReLU(alpha=0.1)
+                                                 )
+
     def call(self, x):
         x1 = self.conv_1x1x1_7x7x7(x)
         x1 = self.conv_7x7x7(x1)
@@ -424,8 +433,20 @@ class InceptionLayer(tf.keras.layers.Layer):
         x4 = self.conv_1x1x1(x)
         x4 = self.crop_1x1x1(x4)
         x_out = self.concat([x1, x2, x3, x4])
-        x_out_ = self.crop_x(x[:,:,:,:,0:1])
-        x_out_ = tf.keras.layers.Lambda(lambda x: tf.tile(x, [1, 1, 1, 1, x_out.shape[-1]]))(x_out_)
+        x_out_ = self.crop_x(x[:,:,:,:,:])#crop input to right size, x[:,:,:,:,0:1] but not sure if this is the right way to do it
+        #the issue is that the number of channels at the second pass through the inception
+        #block is larger for the input than the output, so during the add step
+        #I can't tile the input to match the output because it is larger.
+        #Might have to implement change the number of filters to match the input 
+        #on the second pass through, or do a 1x1x1 pointwise convolution to 
+        #effectively reduce the number of channels to match the output. 
+        #The 1x1x1 convolution is basically a weighted average of channels,
+        # or linear transformation, with learned weights.
+        #Update: implemented 1x1x1 convolution to reduce number of channels
+        if self.input_channels > x_out.shape[-1]:
+            x_out_ = self.conv_1x1x1_reduce_channels(x_out_)
+        else:
+            x_out_ = tf.keras.layers.Lambda(lambda x: tf.tile(x, [1, 1, 1, 1, x_out.shape[-1]]))(x_out_)
         return tf.add(x_out, x_out_)
 
 
@@ -445,17 +466,18 @@ class Generator(tf.keras.Model):
         inputs_vbv = tf.keras.layers.Input(shape=self.vbv_shape[1:])
 
         T21 = tf.keras.layers.UpSampling3D(size=self.upsampling, data_format="channels_last")(inputs_T21)
-        T21 = InceptionLayer()(T21) #tf.keras.layers.Lambda(self.inception__)(T21) #self.inception__(T21)
+        T21 = InceptionLayer(input_channels=inputs_T21.shape[-1])(T21) #tf.keras.layers.Lambda(self.inception__)(T21) #self.inception__(T21)
         T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21) #nn.leaky_relu(T21, 0.1)
         
-        delta = InceptionLayer()(inputs_delta) #tf.keras.layers.Lambda(self.inception__)(inputs_delta) #self.inception__(inputs_delta)
+        delta = InceptionLayer(input_channels=inputs_delta.shape[-1])(inputs_delta) #tf.keras.layers.Lambda(self.inception__)(inputs_delta) #self.inception__(inputs_delta)
         delta = tf.keras.layers.LeakyReLU(alpha=0.1)(delta) #tf.nn.leaky_relu(delta, 0.1)
 
-        vbv = InceptionLayer()(inputs_vbv) #tf.keras.layers.Lambda(self.inception__)(inputs_vbv)
+        vbv = InceptionLayer(input_channels=inputs_vbv.shape[-1])(inputs_vbv) #tf.keras.layers.Lambda(self.inception__)(inputs_vbv)
         vbv = tf.keras.layers.LeakyReLU(alpha=0.1)(vbv) #tf.nn.leaky_relu(vbv, 0.1)
 
         data = tf.keras.layers.Concatenate(axis=4)([T21, delta, vbv])
-        data = InceptionLayer()(data) #tf.keras.layers.Lambda(self.inception__)(data)
+        
+        data = InceptionLayer(input_channels=data.shape[-1])(data) #tf.keras.layers.Lambda(self.inception__)(data)
         data = tf.keras.layers.LeakyReLU(alpha=0.1)(data) #tf.nn.leaky_relu(data, 0.1)
         data = tf.keras.layers.Conv3D(filters=1,#data.shape[-1], 
                                       kernel_size=(1, 1, 1),
@@ -502,6 +524,18 @@ class Generator(tf.keras.Model):
     @tf.function    
     def call(self, T21_train, IC_delta, IC_vbv):
         return self.model(inputs=[T21_train, IC_delta, IC_vbv])
+
+def standardize(data, data_stats):
+    mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
+    mean = mean.numpy()
+    var = var.numpy()
+    for i,(m,v) in enumerate(zip(mean,var)):
+        if m==0 and v==0:
+            mean[i] = 0
+            var[i] = 1
+            #print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
+    std = var**0.5
+    return (data - mean) / std
 
 def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     fig = plt.figure(tight_layout=True, figsize=(15,10))
@@ -563,7 +597,18 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
 
     # Save figure
     plt.savefig(model_path+"/loss_history_and_validation_epoch_{0}_lambda_{1}_lr_{2}.png".format(len(generator_losses_epoch), lbda, learning_rate))
-
+"""
+#test generator
+Data = DataManager(path, redshifts=[10,], IC_seeds=[1000,])
+T21, delta, vbv, T21_lr = Data.data(augment=False, augments=1, low_res=True)
+generator = Generator()
+#standardise input
+T21_standardized = standardize(T21, T21_lr)
+T21_lr_standardized = standardize(T21_lr, T21_lr)
+vbv_standardized = standardize(vbv, vbv)
+generated_boxes = generator.call(T21_lr_standardized, delta, vbv_standardized).numpy()
+print("Generated boxes shape: ", generated_boxes.shape)
+"""
 
 n_critic = 10
 epochs = 200
@@ -634,17 +679,7 @@ batches = dataset.batch(4)
 print("Number of batches: ", len(list(batches)), flush=True)
 
 
-def standardize(data, data_stats):
-    mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
-    mean = mean.numpy()
-    var = var.numpy()
-    for i,(m,v) in enumerate(zip(mean,var)):
-        if m==0 and v==0:
-            mean[i] = 0
-            var[i] = 1
-            #print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
-    std = var**0.5
-    return (data - mean) / std
+
 
 
 
@@ -726,17 +761,8 @@ for e in range(epochs):
     if e%10 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
 
-
-        
-        
-
-
-        
-        
-
-
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
-    break
+    #break
 
 
 
