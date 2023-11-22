@@ -538,8 +538,8 @@ def standardize(data, data_stats):
     return (data - mean) / std
 
 def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
-    fig = plt.figure(tight_layout=True, figsize=(15,10))
-    gs = gridspec.GridSpec(len(IC_seeds)+1, 5, figure=fig)
+    fig = plt.figure(tight_layout=True, figsize=(20,10))
+    gs = gridspec.GridSpec(len(IC_seeds)+1, 6, figure=fig)
     ax_loss = fig.add_subplot(gs[0,:])
 
     #loss row
@@ -568,35 +568,38 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
         ax_hist.legend()
 
         # Plot real and generated data
-        ax_gen = fig.add_subplot(gs[i+1,1])
         T21_std = np.std(T21_standardized[i, :, :, :, 0].numpy().flatten())
+        ax_gen = fig.add_subplot(gs[i+1,1])
         ax_gen.imshow(generated_boxes[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
         ax_gen.set_title("Generated")
         ax_real = fig.add_subplot(gs[i+1,2])
         ax_real.imshow(T21_standardized[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
         ax_real.set_title("Real")
+        ax_real_lr = fig.add_subplot(gs[i+1,3])
+        ax_real_lr.imshow(T21_lr_standardized[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_real_lr.set_title("Real lr")
 
         if plot_slice:
-            ax_delta = fig.add_subplot(gs[i+1,3])
+            ax_delta = fig.add_subplot(gs[i+1,4])
             delta_std = np.std(delta[i, :, :, :, 0].numpy().flatten())
             ax_delta.imshow(delta[i, :, :, 10, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
             ax_delta.set_title("Delta IC ID={0}".format(IC))
-            ax_vbv = fig.add_subplot(gs[i+1,4])
+            ax_vbv = fig.add_subplot(gs[i+1,5])
             vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
             ax_vbv.imshow(vbv_standardized[i, :, :, 10, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
             ax_vbv.set_title("Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
-            ax_delta = fig.add_subplot(gs[i+1,3])
+            ax_delta = fig.add_subplot(gs[i+1,4])
             ax_delta.hist(delta[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
             ax_delta.set_title("Histogram delta IC ID={0}".format(IC))
             ax_delta.legend()
-            ax_vbv = fig.add_subplot(gs[i+1,4])
+            ax_vbv = fig.add_subplot(gs[i+1,5])
             ax_vbv.hist(vbv_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="vbv", density=True)
             ax_vbv.set_title("Histogram vbv IC ID={0}".format(IC))
             ax_vbv.legend()
 
     # Save figure
-    plt.savefig(model_path+"/loss_history_and_validation_epoch_{0}_lambda_{1}_lr_{2}.png".format(len(generator_losses_epoch), lbda, learning_rate))
+    plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr_{1}.png".format(lbda, learning_rate))
 """
 #test generator
 Data = DataManager(path, redshifts=[10,], IC_seeds=[1000,])
@@ -614,8 +617,8 @@ n_critic = 10
 epochs = 200
 beta_1 = 0.5
 beta_2 = 0.999
-learning_rate=np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
-lbda= np.logspace(0,3,4) #np.logspace(-4,0,5) #1e-2
+learning_rate= np.logspace(-6,-6,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
+lbda= np.logspace(0,0,1) #np.logspace(1,1,1) #np.logspace(-4,0,5) #1e-2
 
 
 
@@ -683,7 +686,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(index+20)
+model_path = path+"/trained_models/model_{0}".format(20)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -692,7 +695,7 @@ ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.
                            )
 manager = tf.train.CheckpointManager(ckpt, model_path+"/checkpoints", max_to_keep=5)
 
-resume = False
+resume = True
 
 if resume:
     weights_before = generator.model.get_weights()
