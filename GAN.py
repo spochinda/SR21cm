@@ -176,13 +176,25 @@ class DataManager:
                 for j in range(T21.shape[-1]):
                     temp = tf.reshape(T21[i,:,:,:,j], (1,128,128,128,1))
                     #add 5% gaussian noise
-                    temp = tf.keras.layers.GaussianNoise(tf.reduce_mean(temp)*0.05)(temp)
-                    T21_lr[i,:,:,:,j] = tf.keras.layers.Conv3D(filters=1, kernel_size=(2, 2, 2),
-                                                               kernel_initializer=tf.keras.initializers.constant(value=1/8),
-                                                               use_bias=False, bias_initializer=None, #tf.keras.initializers.Constant(value=0.1),
-                                                               strides=(2, 2, 2), padding='valid', data_format="channels_last", 
-                                                               activation=None,
-                                                               )(temp).numpy().reshape(64,64,64)
+                    #temp = tf.keras.layers.GaussianNoise(tf.reduce_mean(temp)*0.1)(temp)
+                    #T21_lr[i,:,:,:,j] = tf.keras.layers.Conv3D(filters=1, kernel_size=(2, 2, 2),
+                    #                                           kernel_initializer=tf.keras.initializers.constant(value=1/8),#GaussianKernelInitializer(stddev=0.5, size=2)
+                    #                                           use_bias=False, bias_initializer=None, #tf.keras.initializers.Constant(value=0.1),
+                    #                                           strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                    #                                           activation=None,
+                    #                                           )(temp).numpy().reshape(64,64,64)
+                    #try average pooling 
+                    #T21_lr[i,:,:,:,j] = tf.keras.layers.AveragePooling3D(pool_size=(2, 2, 2), strides=(2, 2, 2), padding='valid', data_format="channels_last")(temp).numpy().reshape(64,64,64)  
+                    T21_lr[i,:,:,:,j] = temp[0,::2,::2,::2,0].numpy()
+                    
+                    #fig,axes = plt.subplots(1,1,figsize=(10,5))
+                    #axes[0].imshow(T21[i,:,:,64,j])
+                    #axes[1].imshow(T21_lr[i,:,:,32,j])
+                    #histograms instead
+                    #axes.hist(T21[i,:,:,:,j].numpy().flatten(), density=True, bins=100, alpha=0.5, label="real")
+                    #axes.hist(T21_lr[i,:,:,:,j].flatten(), density=True, bins=100, alpha=0.5, label="fake")
+                    #axes.legend()
+                    #plt.show()
                     
             T21_lr = tf.cast(T21_lr, dtype=tf.float32)
         else:
@@ -224,6 +236,8 @@ class DataManager:
         
         return y[augments,:,:,:]
 
+
+
 Data = DataManager(path, redshifts=list(np.arange(6,28,1)), IC_seeds=list(range(1000,1002)))
 
 dataset = tf.data.Dataset.from_generator(Data.generator_func,
@@ -234,6 +248,7 @@ dataset = tf.data.Dataset.from_generator(Data.generator_func,
                                              tf.TensorSpec(shape=(128,128,128,1), dtype=tf.float32),
                                              tf.TensorSpec(shape=(64,64,64,1), dtype=tf.float32)
                                              ))
+
 #2. Define critic
 class Critic(tf.keras.Model):
     def __init__(self,kernel_sizes=[7,5,3,1],lbda=1e-2):
@@ -484,7 +499,7 @@ class Generator(tf.keras.Model):
                                       kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                       bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                       strides=(1, 1, 1), padding='valid', data_format="channels_last",
-                                      activation='relu'
+                                      activation=tf.keras.layers.LeakyReLU(alpha=0.1)#'relu'
                                       )(data)
         #data = tf.keras.layers.ReLU()(data) 
         
@@ -564,29 +579,30 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
         ax_hist = fig.add_subplot(gs[i+1,0])
         ax_hist.hist(generated_boxes[i, :, :, :, 0].flatten(), bins=100, alpha=0.5, label="generated", density=True)
         ax_hist.hist(T21_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="real", density=True)
+        ax_hist.set_xlabel("Standardized T21")
         ax_hist.set_title("Histograms of standardized data")
         ax_hist.legend()
 
         # Plot real and generated data
         T21_std = np.std(T21_standardized[i, :, :, :, 0].numpy().flatten())
         ax_gen = fig.add_subplot(gs[i+1,1])
-        ax_gen.imshow(generated_boxes[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_gen.imshow(generated_boxes[i, :, :, 64, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
         ax_gen.set_title("Generated")
         ax_real = fig.add_subplot(gs[i+1,2])
-        ax_real.imshow(T21_standardized[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_real.imshow(T21_standardized[i, :, :, 64, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
         ax_real.set_title("Real")
         ax_real_lr = fig.add_subplot(gs[i+1,3])
-        ax_real_lr.imshow(T21_lr_standardized[i, :, :, 10, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_real_lr.imshow(T21_lr_standardized[i, :, :, 32, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
         ax_real_lr.set_title("Real lr")
 
         if plot_slice:
             ax_delta = fig.add_subplot(gs[i+1,4])
             delta_std = np.std(delta[i, :, :, :, 0].numpy().flatten())
-            ax_delta.imshow(delta[i, :, :, 10, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
+            ax_delta.imshow(delta[i, :, :, 64, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
             ax_delta.set_title("Delta IC ID={0}".format(IC))
             ax_vbv = fig.add_subplot(gs[i+1,5])
             vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
-            ax_vbv.imshow(vbv_standardized[i, :, :, 10, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
+            ax_vbv.imshow(vbv_standardized[i, :, :, 64, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
             ax_vbv.set_title("Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
             ax_delta = fig.add_subplot(gs[i+1,4])
@@ -600,25 +616,20 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
 
     # Save figure
     plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr_{1}.png".format(lbda, learning_rate))
-"""
-#test generator
-Data = DataManager(path, redshifts=[10,], IC_seeds=[1000,])
-T21, delta, vbv, T21_lr = Data.data(augment=False, augments=1, low_res=True)
-generator = Generator()
-#standardise input
-T21_standardized = standardize(T21, T21_lr)
-T21_lr_standardized = standardize(T21_lr, T21_lr)
-vbv_standardized = standardize(vbv, vbv)
-generated_boxes = generator.call(T21_lr_standardized, delta, vbv_standardized).numpy()
-print("Generated boxes shape: ", generated_boxes.shape)
-"""
+
+##check T21_lr
+#load data
+Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1010)))
+T21, delta, vbv, T21_lr = Data.data(augment=False, augments=24, low_res=True)
+
+
 
 n_critic = 10
 epochs = 200
 beta_1 = 0.5
 beta_2 = 0.999
 learning_rate= np.logspace(-6,-6,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
-lbda= np.logspace(0,0,1) #np.logspace(1,1,1) #np.logspace(-4,0,5) #1e-2
+lbda= np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
 
 
 
@@ -686,7 +697,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(20)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(29)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -695,7 +706,7 @@ ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.
                            )
 manager = tf.train.CheckpointManager(ckpt, model_path+"/checkpoints", max_to_keep=5)
 
-resume = True
+resume = False
 
 if resume:
     weights_before = generator.model.get_weights()
@@ -777,7 +788,7 @@ print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".f
 
 """
 
-
+animation
 
 #T21_train = tf.expand_dims(input=tf.cast(T21_train,dtype=tf.float32), axis=0)
 #T21_target = tf.expand_dims(input=tf.cast(T21_target,dtype=tf.float32), axis=0)
@@ -891,104 +902,4 @@ if False:
 
 #plt.title("z={0}, Mean: {1:.2f}, Std: {2:.2f}".format(z[22], mean[0], var[0]**0.5))
 #plt.show()
-"""
-"""
-
-
-#########RETIRED CODE#########
-def critic(T21_target, IC_delta, IC_vbv):
-    data_target = tf.concat((T21_target, IC_delta, IC_vbv), axis=4) #tf.expand_dims(input=tf.concat((T21_target, IC_delta, IC_vbv), axis=3), axis=0)
-
-    # Define variable initializers
-    
-
-
-    # layer 1
-    w1 = tf.Variable(name="W_w1", 
-                    initial_value=w_initializer((7, 7, 7, 3, 8)), 
-                    trainable=True, 
-                    dtype=tf.float32)
-
-    b1 = tf.Variable(name="W_b1",
-                    initial_value=b_initializer((8,)), 
-                    trainable=True, 
-                    dtype=tf.float32)
-
-    x1 = tf.nn.leaky_relu(tf.nn.conv3d(data_target, 
-                                        w1, 
-                                        strides=[1, 2, 2, 2, 1], 
-                                        padding='VALID') + b1, 0.1)
-    print("x1 shape: ", x1.shape)
-    # layer 2
-    w2 = tf.Variable(name="W_w2", 
-                    initial_value=w_initializer((5, 5, 5, 8, 16)), 
-                    trainable=True, 
-                    dtype=tf.float32)
-
-    b2 = tf.Variable(name="W_b2",
-                    initial_value=b_initializer((16,)), 
-                    trainable=True, 
-                    dtype=tf.float32)
-
-    x2 = tf.nn.leaky_relu(tf.nn.conv3d(x1, 
-                                        w2, 
-                                        strides=[1, 1, 1, 1, 1], 
-                                        padding='VALID') + b2, 0.1)
-    print("x2 shape: ", x2.shape)
-    # layer 3
-    w3 = tf.Variable(name="W_w3", 
-                    initial_value=w_initializer((3, 3, 3, 16, 32)),
-                    trainable=True, 
-                    dtype=tf.float32)
-
-
-    b3 = tf.Variable(name="W_b3",
-                    initial_value=b_initializer((32,)), 
-                    trainable=True, 
-                    dtype=tf.float32)
-
-    x3 = tf.nn.leaky_relu(tf.nn.conv3d(x2, 
-                                        w3, 
-                                        strides=[1, 2, 2, 2, 1], 
-                                        padding='VALID') + b3, 0.1)
-    print("x3 shape: ", x3.shape)
-    # layer 4
-    w4 = tf.Variable(name="W_w4", 
-                    initial_value=w_initializer((1, 1, 1, 32, 64)),
-                    trainable=True, 
-                    dtype=tf.float32)
-
-
-    b4 = tf.Variable(name="W_b4",
-                    initial_value=b_initializer((64,)), 
-                    trainable=True, 
-                    dtype=tf.float32)
-
-    x4 = tf.nn.leaky_relu(tf.nn.conv3d(x3, 
-                                        w4, 
-                                        strides=[1, 1, 1, 1, 1], 
-                                        padding='VALID') + b4, 0.1)
-
-    print("shape x4: ", x4.shape, x4.get_shape().as_list()[1:])
-    #layer 5: output
-    x5 = tf.reshape(x4, (-1, np.product(x4.get_shape().as_list()[1:])))
-    print("shape x5: ", x5.shape)
-    w5 = tf.Variable(name="W_w5", 
-                    initial_value=w_initializer((x5.get_shape().as_list()[-1], 1)), 
-                    trainable=True,
-                    dtype=tf.float32)
-
-    b5 = tf.Variable(name="W_b5", 
-                    initial_value=b_initializer((1,)), 
-                    trainable=True,
-                    dtype=tf.float32, 
-                    )
-
-    x_out = tf.matmul(x5, w5) + b5
-    print("shape x_out: ", x_out.shape)
-    print("w5", w5.shape)
-    print("b5", b5.shape)
-    return x_out
-
-
 """
