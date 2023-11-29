@@ -212,6 +212,130 @@ class Critic(tf.keras.Model):
     #def call(self, T21_train, IC_delta, IC_vbv):
         #return self.model(inputs=[T21_train, IC_delta, IC_vbv])
 
+
+
+
+class Generator(tf.keras.Model):
+    def __init__(self, T21_shape=(1,64,64,64,1), delta_shape=(1,128,128,128,1), vbv_shape=(1,128,128,128,1),
+                 activation='tanh'):
+        super(Generator, self).__init__()
+        self.T21_shape = T21_shape
+        self.delta_shape = delta_shape
+        self.vbv_shape = vbv_shape
+        self.upsampling = int(delta_shape[1]/T21_shape[1])
+        self.activation = activation
+        self.build_generator_model()
+
+    def build_generator_model(self):
+        inputs_T21 = tf.keras.layers.Input(shape=self.T21_shape[1:]) #not including the batch size according to docs
+        inputs_delta = tf.keras.layers.Input(shape=self.delta_shape[1:])
+        inputs_vbv = tf.keras.layers.Input(shape=self.vbv_shape[1:])
+
+        T21 = tf.keras.layers.UpSampling3D(size=self.upsampling, data_format="channels_last")(inputs_T21)
+        T21_ = InceptionLayer(input_channels=inputs_T21.shape[-1], 
+                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                             activation=self.activation)(T21)
+        T21_pos = InceptionLayer(input_channels=inputs_T21.shape[-1], 
+                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                             activation=tf.keras.layers.LeakyReLU(alpha=0.1))(T21)
+        T21_neg = -InceptionLayer(input_channels=inputs_T21.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-T21)
+        
+
+        delta_ = InceptionLayer(input_channels=inputs_delta.shape[-1],
+                               filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                               filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
+                               activation=self.activation)(inputs_delta)
+        delta_pos = InceptionLayer(input_channels=inputs_delta.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_delta)
+        delta_neg = -InceptionLayer(input_channels=inputs_delta.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_delta)
+
+
+        vbv_ = InceptionLayer(input_channels=inputs_vbv.shape[-1], 
+                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
+                             activation=self.activation)(inputs_vbv) #tf.keras.layers.Lambda(self.inception__)(inputs_vbv)
+        vbv_pos = InceptionLayer(input_channels=inputs_vbv.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_vbv)
+        vbv_neg = -InceptionLayer(input_channels=inputs_vbv.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_vbv)
+
+
+        data = tf.keras.layers.Concatenate(axis=4)([T21_, T21_pos, T21_neg, delta_, delta_pos, delta_neg, vbv_, vbv_pos, vbv_neg])
+        data_ = InceptionLayer(input_channels=data.shape[-1], 
+                              filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                              filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
+                              activation=self.activation)(data) 
+        data_pos = InceptionLayer(input_channels=data.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(data)
+        data_neg = -InceptionLayer(input_channels=data.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-data)
+        data = tf.keras.layers.Concatenate(axis=4)([data_, data_pos, data_neg])
+        
+
+        data = tf.keras.layers.Conv3D(filters=1,#data.shape[-1], 
+                                      kernel_size=(1, 1, 1),
+                                      kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                      bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                      strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                      activation=None,#tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
+                                      )(data)
+        
+        self.model = tf.keras.Model(inputs=[inputs_T21, inputs_delta, inputs_vbv], outputs=data)
+        return self.model
+
+    @tf.function
+    def generator_loss(self, T21_big, IC_delta, IC_vbv, generated_boxes, critic):
+        T21_big = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(T21_big)
+        IC_delta = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_delta)
+        IC_vbv = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_vbv)
+        
+        #W_real = critic(T21_big, IC_delta, IC_vbv)
+        W_gen = critic(generated_boxes, IC_delta, IC_vbv)
+
+        loss = - tf.reduce_mean(W_gen) #- tf.reduce_mean(W_real - W_gen)
+        return loss
+
+    @tf.function
+    def train_step_generator(self, T21_small, T21_big, IC_delta, IC_vbv, optimizer, critic):
+        #
+        #Function that performs one training step for the generator network.
+        #The function calls the loss function for the generator network, computes the gradients,
+        #and applies the gradients to the network's parameters.
+        #
+
+        with tf.GradientTape() as gen_tape: 
+            generated_boxes = self.call(T21_small, IC_delta, IC_vbv)
+            #generated_output = Critic(generated_boxes, IC_delta, IC_vbv)
+            gen_loss = self.generator_loss(T21_big, IC_delta, IC_vbv, generated_boxes, critic)
+
+        grad_gen = gen_tape.gradient(gen_loss, self.model.trainable_variables)
+        optimizer.apply_gradients(zip(grad_gen, self.model.trainable_variables))
+
+        return gen_loss
+        
+    @tf.function    
+    def call(self, T21_train, IC_delta, IC_vbv):
+        return self.model(inputs=[T21_train, IC_delta, IC_vbv])
+    
+
 class InceptionLayer(tf.keras.layers.Layer):
     def __init__(self, input_channels=1, filters_1x1x1_7x7x7=6, filters_7x7x7=6, filters_1x1x1_5x5x5=6, filters_5x5x5=6, filters_1x1x1_3x3x3=6, filters_3x3x3=6, filters_1x1x1=6,
                  activation='tanh'):
@@ -314,124 +438,13 @@ class InceptionLayer(tf.keras.layers.Layer):
         x_out = self.activation_layer(x_out)
         return x_out
 
+class ResidualBlock(tf.keras.layers.Layer):
+    def __init__(self):
+        super(ResidualBlock, self).__init__()
 
-
-class Generator(tf.keras.Model):
-    def __init__(self, T21_shape=(1,64,64,64,1), delta_shape=(1,128,128,128,1), vbv_shape=(1,128,128,128,1),
-                 activation='tanh'):
-        super(Generator, self).__init__()
-        self.T21_shape = T21_shape
-        self.delta_shape = delta_shape
-        self.vbv_shape = vbv_shape
-        self.upsampling = int(delta_shape[1]/T21_shape[1])
-        self.activation = activation
-        self.build_generator_model()
-
-    def build_generator_model(self):
-        inputs_T21 = tf.keras.layers.Input(shape=self.T21_shape[1:]) #not including the batch size according to docs
-        inputs_delta = tf.keras.layers.Input(shape=self.delta_shape[1:])
-        inputs_vbv = tf.keras.layers.Input(shape=self.vbv_shape[1:])
-
-        T21 = tf.keras.layers.UpSampling3D(size=self.upsampling, data_format="channels_last")(inputs_T21)
-        T21_ = InceptionLayer(input_channels=inputs_T21.shape[-1], 
-                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
-                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                             activation=self.activation)(T21)
-        T21_pos = InceptionLayer(input_channels=inputs_T21.shape[-1], 
-                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
-                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                             activation=tf.keras.layers.LeakyReLU(alpha=0.1))(T21)
-        T21_neg = -InceptionLayer(input_channels=inputs_T21.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-T21)
+    def call(self, input, layer, **kwargs):
+        x1 = layer(input, **kwargs)
+        x2 = layer(input, **kwargs)
+        x3 = -layer(-input, **kwargs)
+        return x1, x2, x3
         
-
-        delta_ = InceptionLayer(input_channels=inputs_delta.shape[-1],
-                               filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
-                               filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
-                               activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_delta)
-        delta_pos = InceptionLayer(input_channels=inputs_delta.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_delta)
-        delta_neg = -InceptionLayer(input_channels=inputs_delta.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_delta)
-
-
-        vbv_ = InceptionLayer(input_channels=inputs_vbv.shape[-1], 
-                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
-                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
-                             activation=self.activation)(inputs_vbv) #tf.keras.layers.Lambda(self.inception__)(inputs_vbv)
-        vbv_pos = InceptionLayer(input_channels=inputs_vbv.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_vbv)
-        vbv_neg = -InceptionLayer(input_channels=inputs_vbv.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_vbv)
-
-
-        data = tf.keras.layers.Concatenate(axis=4)([T21_, T21_pos, T21_neg, delta_, delta_pos, delta_neg, vbv_, vbv_pos, vbv_neg])
-        data_ = InceptionLayer(input_channels=data.shape[-1], 
-                              filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
-                              filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
-                              activation=self.activation)(data) 
-        data_pos = InceptionLayer(input_channels=data.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(data)
-        data_neg = -InceptionLayer(input_channels=data.shape[-1],
-                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
-                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
-                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-data)
-        data = tf.keras.layers.Concatenate(axis=4)([data_, data_pos, data_neg])
-        
-
-        data = tf.keras.layers.Conv3D(filters=1,#data.shape[-1], 
-                                      kernel_size=(1, 1, 1),
-                                      kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
-                                      bias_initializer=tf.keras.initializers.Constant(value=0.1),
-                                      strides=(1, 1, 1), padding='valid', data_format="channels_last",
-                                      activation=None,#tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
-                                      )(data)
-        
-        self.model = tf.keras.Model(inputs=[inputs_T21, inputs_delta, inputs_vbv], outputs=data)
-        return self.model
-
-    @tf.function
-    def generator_loss(self, T21_big, IC_delta, IC_vbv, generated_boxes, critic):
-        T21_big = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(T21_big)
-        IC_delta = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_delta)
-        IC_vbv = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_vbv)
-        
-        #W_real = critic(T21_big, IC_delta, IC_vbv)
-        W_gen = critic(generated_boxes, IC_delta, IC_vbv)
-
-        loss = - tf.reduce_mean(W_gen) #- tf.reduce_mean(W_real - W_gen)
-        return loss
-
-    @tf.function
-    def train_step_generator(self, T21_small, T21_big, IC_delta, IC_vbv, optimizer, critic):
-        #
-        #Function that performs one training step for the generator network.
-        #The function calls the loss function for the generator network, computes the gradients,
-        #and applies the gradients to the network's parameters.
-        #
-
-        with tf.GradientTape() as gen_tape: 
-            generated_boxes = self.call(T21_small, IC_delta, IC_vbv)
-            #generated_output = Critic(generated_boxes, IC_delta, IC_vbv)
-            gen_loss = self.generator_loss(T21_big, IC_delta, IC_vbv, generated_boxes, critic)
-
-        grad_gen = gen_tape.gradient(gen_loss, self.model.trainable_variables)
-        optimizer.apply_gradients(zip(grad_gen, self.model.trainable_variables))
-
-        return gen_loss
-        
-    @tf.function    
-    def call(self, T21_train, IC_delta, IC_vbv):
-        return self.model(inputs=[T21_train, IC_delta, IC_vbv])

@@ -283,8 +283,9 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     T21, delta, vbv, T21_lr = Data_validation.data(augment=False, augments=9, low_res=True) 
     T21_standardized = standardize(T21, T21_lr)
     T21_lr_standardized = standardize(T21_lr, T21_lr)
+    delta_standardized = standardize(delta, delta)
     vbv_standardized = standardize(vbv, vbv)
-    generated_boxes = generator(T21_lr_standardized, delta, vbv_standardized).numpy()
+    generated_boxes = generator(T21_lr_standardized, delta_standardized, vbv_standardized).numpy()
 
     for i,IC in enumerate(IC_seeds):
         # Plot histograms
@@ -309,8 +310,8 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
 
         if plot_slice:
             ax_delta = fig.add_subplot(gs[i+1,4])
-            delta_std = np.std(delta[i, :, :, :, 0].numpy().flatten())
-            ax_delta.imshow(delta[i, :, :, 64, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
+            delta_std = np.std(delta_standardized[i, :, :, :, 0].numpy().flatten())
+            ax_delta.imshow(delta_standardized[i, :, :, 64, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
             ax_delta.set_title("Delta IC ID={0}".format(IC))
             ax_vbv = fig.add_subplot(gs[i+1,5])
             vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
@@ -318,7 +319,7 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
             ax_vbv.set_title("Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
             ax_delta = fig.add_subplot(gs[i+1,4])
-            ax_delta.hist(delta[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
+            ax_delta.hist(delta_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
             ax_delta.set_title("Histogram delta IC ID={0}".format(IC))
             ax_delta.legend()
             ax_vbv = fig.add_subplot(gs[i+1,5])
@@ -359,7 +360,10 @@ generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
 #model.summary()
-#tf.keras.utils.plot_model(model, to_file=path+'/generator_model.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+#tf.keras.utils.plot_model(generator.model, 
+#                          to_file=path+'/plots/generator_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+#tf.keras.utils.plot_model(critic.model,
+#                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 
 
 
@@ -408,7 +412,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(32)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(33)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -497,8 +501,8 @@ with open(model_path+"/losses.pkl", "rb") as f:
 #print last 10 losses and total number of epochs
 print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
 
-
 """
+
 
 #animation
 
