@@ -355,7 +355,6 @@ generator = Generator()
 critic = Critic(lbda=lbda)
 
 
-
 generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
@@ -409,7 +408,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(31)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(32)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -454,14 +453,15 @@ for e in range(epochs):
         start_start = time.time()
         T21_standardized = standardize(T21, T21_lr)
         T21_lr_standardized = standardize(T21_lr, T21_lr)
+        delta_standardized = standardize(delta, delta)
         vbv_standardized = standardize(vbv, vbv)
         
-        crit_loss, gp = critic.train_step_critic(T21_standardized, delta, vbv_standardized, T21_lr_standardized, critic_optimizer, generator)
+        crit_loss, gp = critic.train_step_critic(T21_standardized, delta_standardized, vbv_standardized, T21_lr_standardized, critic_optimizer, generator)
         critic_losses.append(crit_loss)
         gradient_penalty.append(gp)
 
         if i%n_critic == 0:
-            gen_loss = generator.train_step_generator(T21_lr_standardized, T21_standardized, delta, vbv_standardized, generator_optimizer, critic)
+            gen_loss = generator.train_step_generator(T21_lr_standardized, T21_standardized, delta_standardized, vbv_standardized, generator_optimizer, critic)
             generator_losses.append(gen_loss)
         
         print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
@@ -497,8 +497,8 @@ with open(model_path+"/losses.pkl", "rb") as f:
 #print last 10 losses and total number of epochs
 print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
 
-"""
 
+"""
 
 #animation
 

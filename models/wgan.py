@@ -1,49 +1,137 @@
 import tensorflow as tf
 
 class Critic(tf.keras.Model):
-    def __init__(self,kernel_sizes=[7,5,3,1],lbda=1e-2, activation='tanh'):
+    def __init__(self,
+                 delta_shape=(1,128,128,128,1), vbv_shape=(1,128,128,128,1),
+                 kernel_sizes=[7,5,3,1],
+                 lbda=1e1, activation='tanh'):
         super(Critic, self).__init__()
+        #self.T21_shape = T21_shape
+        self.delta_shape = delta_shape
+        self.vbv_shape = vbv_shape
         self.kernel_sizes = kernel_sizes
         self.crop = int((max(self.kernel_sizes)-1))
         self.lbda = lbda
         self.activation = activation
         self.build_critic_model()
+        #max kernel size must be odd
+        assert max(self.kernel_sizes)%2==1, "max kernel size must be odd"
 
     def build_critic_model(self):
-        conv1 = tf.keras.layers.Conv3D(filters=8, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
+        input = tf.keras.layers.Input(shape=(self.delta_shape[1]-self.crop*2, self.delta_shape[2]-self.crop*2, self.delta_shape[3]-self.crop*2, 3)) #not including the batch size according to docs
+        input_ = tf.keras.layers.Conv3D(filters=3, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(2, 2, 2), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
-                                            )
+                                            )(input)
+        input_pos = tf.keras.layers.Conv3D(filters=3, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(input)
+        input_neg = -tf.keras.layers.Conv3D(filters=3, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(-input)
         
-        conv2 = tf.keras.layers.Conv3D(filters=16, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
+        input_ = tf.keras.layers.Conv3D(filters=5, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(1, 1, 1), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
-                                            )
+                                            )(input_)
+        input_pos = tf.keras.layers.Conv3D(filters=5, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(input_pos)
+        input_neg = -tf.keras.layers.Conv3D(filters=5, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(-input_neg)
         
-        conv3 = tf.keras.layers.Conv3D(filters=32, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
+        input_ = tf.keras.layers.Conv3D(filters=9, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(2, 2, 2), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
-                                            )
+                                            )(input_)
+        input_pos = tf.keras.layers.Conv3D(filters=9, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(input_pos)
+        input_neg = -tf.keras.layers.Conv3D(filters=9, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(-input_neg)
         
-        conv4 = tf.keras.layers.Conv3D(filters=64, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
+        input_ = tf.keras.layers.Conv3D(filters=21, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
                                             kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                             bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                             strides=(1, 1, 1), padding='valid', data_format="channels_last", 
                                             activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
-                                            )
-        flatten = tf.keras.layers.Flatten()
-        out = tf.keras.layers.Dense(units=1,
+                                            )(input_)
+        input_pos = tf.keras.layers.Conv3D(filters=21, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(input_pos)
+        input_neg = -tf.keras.layers.Conv3D(filters=21, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
+                                            kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                            bias_initializer=tf.keras.initializers.Constant(value=0.1),
+                                            strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+                                            activation=tf.keras.layers.LeakyReLU(alpha=0.1)
+                                            )(-input_neg)
+        
+        #conv1 = tf.keras.layers.Conv3D(filters=8, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
+        #                                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+        #                                    bias_initializer=tf.keras.initializers.Constant(value=0.1),
+        #                                    strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+        #                                    activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
+        #                                    )
+        # 
+        #conv2 = tf.keras.layers.Conv3D(filters=16, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
+        #                                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+        #                                    bias_initializer=tf.keras.initializers.Constant(value=0.1),
+        #                                    strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+        #                                    activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
+        #                                    )                                    
+        #conv3 = tf.keras.layers.Conv3D(filters=32, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
+        #                                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+        #                                    bias_initializer=tf.keras.initializers.Constant(value=0.1),
+        #                                    strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+        #                                    activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
+        #                                    )
+        
+        #conv4 = tf.keras.layers.Conv3D(filters=64, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
+        #                                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+        #                                    bias_initializer=tf.keras.initializers.Constant(value=0.1),
+        #                                    strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+        #                                    activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
+        #                                    )
+        output = tf.keras.layers.Concatenate(axis=4)([input_, input_pos, input_neg])
+        
+        output = tf.keras.layers.Flatten()(output)
+        #flatten = tf.keras.layers.Flatten()
+        output = tf.keras.layers.Dense(units=1,
                                          kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                          bias_initializer=tf.keras.initializers.Constant(value=0.1),
-                                         name='output_layer')
+                                         name='output_layer')(output)
 
-        self.model = tf.keras.Sequential([conv1, conv2, conv3, conv4, flatten, out])    
+        #self.model = tf.keras.Sequential([conv1, conv2, conv3, conv4, flatten, out])    
+        self.model = tf.keras.Model(inputs=[input], outputs=output)
         return self.model
 
     @tf.function
@@ -55,6 +143,7 @@ class Critic(tf.keras.Model):
         IC_vbv = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_vbv)
 
         # Evaluate the critic network on the real big boxes and the fake big boxes
+        print("Shapes: ", T21_big.shape, IC_delta.shape, IC_vbv.shape, generated_boxes.shape)
         W_real = self.call(T21_big, IC_delta, IC_vbv)
         W_gen = self.call(generated_boxes, IC_delta, IC_vbv)
 
@@ -117,11 +206,15 @@ class Critic(tf.keras.Model):
     @tf.function
     def call(self, T21_target, IC_delta, IC_vbv):
         data_target = tf.concat((T21_target, IC_delta, IC_vbv), axis=4)
-        x_out_model = self.model(data_target)
+        #x_out_model = self.model(data_target)
+        x_out_model = self.model(inputs=[data_target])
         return x_out_model
+    #def call(self, T21_train, IC_delta, IC_vbv):
+        #return self.model(inputs=[T21_train, IC_delta, IC_vbv])
 
 class InceptionLayer(tf.keras.layers.Layer):
-    def __init__(self, input_channels=1, filters_1x1x1_7x7x7=6, filters_7x7x7=6, filters_1x1x1_5x5x5=6, filters_5x5x5=6, filters_1x1x1_3x3x3=6, filters_3x3x3=6, filters_1x1x1=6):
+    def __init__(self, input_channels=1, filters_1x1x1_7x7x7=6, filters_7x7x7=6, filters_1x1x1_5x5x5=6, filters_5x5x5=6, filters_1x1x1_3x3x3=6, filters_3x3x3=6, filters_1x1x1=6,
+                 activation='tanh'):
         super(InceptionLayer, self).__init__()
         self.input_channels = input_channels
         self.conv_1x1x1_7x7x7 = tf.keras.layers.Conv3D(filters=filters_1x1x1_7x7x7, kernel_size=(1, 1, 1),
@@ -183,6 +276,8 @@ class InceptionLayer(tf.keras.layers.Layer):
                                                  strides=(1, 1, 1), padding='valid', data_format="channels_last",
                                                  activation=None #tf.keras.layers.LeakyReLU(alpha=0.1)
                                                  )
+        
+        self.activation_layer = tf.keras.layers.Activation(activation)
 
     def call(self, x):
         x1 = self.conv_1x1x1_7x7x7(x)
@@ -195,10 +290,11 @@ class InceptionLayer(tf.keras.layers.Layer):
         x3 = self.conv_1x1x1_3x3x3(x)
         x3 = self.conv_3x3x3(x3)
         x3 = self.crop_3x3x3(x3)
-        
+        #filters_1x1x1_7x7x7=6, filters_7x7x7=6, filters_1x1x1_5x5x5=6, filters_5x5x5=6, filters_1x1x1_3x3x3=6, filters_3x3x3=6, filters_1x1x1=6
         x4 = self.conv_1x1x1(x)
         x4 = self.crop_1x1x1(x4)
         x_out = self.concat([x1, x2, x3, x4])
+        
         x_out_ = self.crop_x(x[:,:,:,:,:])#crop input to right size, x[:,:,:,:,0:1] but not sure if this is the right way to do it
         #the issue is that the number of channels at the second pass through the inception
         #block is larger for the input than the output, so during the add step
@@ -213,7 +309,10 @@ class InceptionLayer(tf.keras.layers.Layer):
             x_out_ = self.conv_1x1x1_reduce_channels(x_out_)
         else:
             x_out_ = tf.keras.layers.Lambda(lambda x: tf.tile(x, [1, 1, 1, 1, x_out.shape[-1]]))(x_out_)
-        return tf.add(x_out, x_out_)
+
+        x_out = tf.add(x_out, x_out_)
+        x_out = self.activation_layer(x_out)
+        return x_out
 
 
 
@@ -234,28 +333,71 @@ class Generator(tf.keras.Model):
         inputs_vbv = tf.keras.layers.Input(shape=self.vbv_shape[1:])
 
         T21 = tf.keras.layers.UpSampling3D(size=self.upsampling, data_format="channels_last")(inputs_T21)
-        T21 = InceptionLayer(input_channels=inputs_T21.shape[-1])(T21) #tf.keras.layers.Lambda(self.inception__)(T21) #self.inception__(T21)
-        #change to tanh activation#T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21) #nn.leaky_relu(T21, 0.1)
-        T21 = tf.keras.layers.Activation(self.activation)(T21)
+        T21_ = InceptionLayer(input_channels=inputs_T21.shape[-1], 
+                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                             activation=self.activation)(T21)
+        T21_pos = InceptionLayer(input_channels=inputs_T21.shape[-1], 
+                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                             activation=tf.keras.layers.LeakyReLU(alpha=0.1))(T21)
+        T21_neg = -InceptionLayer(input_channels=inputs_T21.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-T21)
         
-        delta = InceptionLayer(input_channels=inputs_delta.shape[-1])(inputs_delta) #tf.keras.layers.Lambda(self.inception__)(inputs_delta) #self.inception__(inputs_delta)
-        delta = tf.keras.layers.LeakyReLU(alpha=0.1)(delta) #tf.nn.leaky_relu(delta, 0.1)
 
-        vbv = InceptionLayer(input_channels=inputs_vbv.shape[-1])(inputs_vbv) #tf.keras.layers.Lambda(self.inception__)(inputs_vbv)
-        vbv = tf.keras.layers.Activation(self.activation)(vbv) #tf.keras.layers.LeakyReLU(alpha=0.1)(vbv) #tf.nn.leaky_relu(vbv, 0.1)
+        delta_ = InceptionLayer(input_channels=inputs_delta.shape[-1],
+                               filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                               filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
+                               activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_delta)
+        delta_pos = InceptionLayer(input_channels=inputs_delta.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_delta)
+        delta_neg = -InceptionLayer(input_channels=inputs_delta.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_delta)
 
-        data = tf.keras.layers.Concatenate(axis=4)([T21, delta, vbv])
+
+        vbv_ = InceptionLayer(input_channels=inputs_vbv.shape[-1], 
+                             filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                             filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
+                             activation=self.activation)(inputs_vbv) #tf.keras.layers.Lambda(self.inception__)(inputs_vbv)
+        vbv_pos = InceptionLayer(input_channels=inputs_vbv.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(inputs_vbv)
+        vbv_neg = -InceptionLayer(input_channels=inputs_vbv.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_vbv)
+
+
+        data = tf.keras.layers.Concatenate(axis=4)([T21_, T21_pos, T21_neg, delta_, delta_pos, delta_neg, vbv_, vbv_pos, vbv_neg])
+        data_ = InceptionLayer(input_channels=data.shape[-1], 
+                              filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
+                              filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4, 
+                              activation=self.activation)(data) 
+        data_pos = InceptionLayer(input_channels=data.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(data)
+        data_neg = -InceptionLayer(input_channels=data.shape[-1],
+                                filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4,
+                                filters_5x5x5=4, filters_1x1x1_3x3x3=4, filters_3x3x3=4, filters_1x1x1=4,
+                                activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-data)
+        data = tf.keras.layers.Concatenate(axis=4)([data_, data_pos, data_neg])
         
-        data = InceptionLayer(input_channels=data.shape[-1])(data) #tf.keras.layers.Lambda(self.inception__)(data)
-        data = tf.keras.layers.Activation(self.activation)(data)#tf.keras.layers.LeakyReLU(alpha=0.1)(data) #tf.nn.leaky_relu(data, 0.1)
+
         data = tf.keras.layers.Conv3D(filters=1,#data.shape[-1], 
                                       kernel_size=(1, 1, 1),
                                       kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                       bias_initializer=tf.keras.initializers.Constant(value=0.1),
                                       strides=(1, 1, 1), padding='valid', data_format="channels_last",
-                                      activation=tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
+                                      activation=None,#tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
                                       )(data)
-        #data = tf.keras.layers.ReLU()(data) 
         
         self.model = tf.keras.Model(inputs=[inputs_T21, inputs_delta, inputs_vbv], outputs=data)
         return self.model
