@@ -312,19 +312,19 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
             ax_delta = fig.add_subplot(gs[i+1,4])
             delta_std = np.std(delta_standardized[i, :, :, :, 0].numpy().flatten())
             ax_delta.imshow(delta_standardized[i, :, :, 64, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
-            ax_delta.set_title("Delta IC ID={0}".format(IC))
+            ax_delta.set_title("Standardized Delta IC ID={0}".format(IC))
             ax_vbv = fig.add_subplot(gs[i+1,5])
             vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
             ax_vbv.imshow(vbv_standardized[i, :, :, 64, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
-            ax_vbv.set_title("Vbv IC ID={0}".format(IC))
+            ax_vbv.set_title("Standardized Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
             ax_delta = fig.add_subplot(gs[i+1,4])
             ax_delta.hist(delta_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
-            ax_delta.set_title("Histogram delta IC ID={0}".format(IC))
+            ax_delta.set_title("Standardized delta IC ID={0}".format(IC))
             ax_delta.legend()
             ax_vbv = fig.add_subplot(gs[i+1,5])
             ax_vbv.hist(vbv_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="vbv", density=True)
-            ax_vbv.set_title("Histogram vbv IC ID={0}".format(IC))
+            ax_vbv.set_title("Standardized vbv IC ID={0}".format(IC))
             ax_vbv.legend()
 
     # Save figure
@@ -489,7 +489,7 @@ for e in range(epochs):
     #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
     if e%1 == 0:
-        plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=False)
+        plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
@@ -501,58 +501,10 @@ with open(model_path+"/losses.pkl", "rb") as f:
 #print last 10 losses and total number of epochs
 print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
 
+
 """
 
-
 #animation
-
-#T21_train = tf.expand_dims(input=tf.cast(T21_train,dtype=tf.float32), axis=0)
-#T21_target = tf.expand_dims(input=tf.cast(T21_target,dtype=tf.float32), axis=0)
-
-
-for e in range(epochs):
-    for t in range(n_critic):
-        # Select a random batch of big boxes
-        indices = np.random.choice(T21_target.shape[0], size=batch_size, replace=False)
-        print("batch, target shape 0, indices: ", batch_size, T21_target.shape[0], indices)
-        
-        T21_big_batch = tf.gather(T21_target, indices, axis=0)#T21_target[indices,:,:,:,:] #10th redshift slice chosen earlier
-        IC_delta_batch = tf.gather(delta, indices, axis=0) #delta[indices,:,:,:,:]
-        IC_vbv_batch = tf.gather(vbv, indices, axis=0) #vbv[indices,:,:,:,:]
-
-        # Select a random batch of small boxes
-        indices = np.random.choice(T21_train.shape[0], size=batch_size, replace=False)
-        T21_small_batch = tf.gather(T21_train, indices, axis=0) #T21_train[indices,:,:,:,:] #10th redshift slice chosen earlier
-        
-        print("shape inputs: ", T21_big_batch.shape, IC_delta_batch.shape, IC_vbv_batch.shape, T21_small_batch.shape)
-
-        # Train the critic network on the batch of big boxes
-        critic_loss_value = critic_train_step(T21_big_batch, IC_delta_batch, IC_vbv_batch, T21_small_batch)
-
-    # Select a random batch of small boxes
-    indices = np.random.choice(T21_train.shape[0], size=batch_size, replace=False)
-    T21_small_batch = tf.gather(T21_train, indices, axis=0)# T21_train[indices,:,:,:,:] #10th redshift slice chosen earlier
-    IC_delta_batch = tf.gather(delta, indices, axis=0) #delta[indices,:,:,:,:]
-    IC_vbv_batch = tf.gather(vbv, indices, axis=0) #vbv[indices,:,:,:,:]
-
-    # Train the generator network on the batch of small boxes
-    generator_loss_value = generator_train_step(T21_small_batch, IC_delta_batch, IC_vbv_batch)
-    if e%10000 == 0:
-        batch_size *= 2
-    # Print the loss values for the critic and generator networks
-    print("Epoch: {}, Critic loss: {}, Generator loss: {}".format(e+1, critic_loss_value, generator_loss_value))
-
-
-
-
-    
-
-z = np.arange(6,29,1)[::-1]
-Data = DataManager(path, redshifts=list(z[::-1]), IC_seeds=list(range(1000,1002)))
-T21, delta, vbv, T21_lr = Data.data(augment=True, augments=2, low_res=True)
-
-
-# Plotting
 
 if False:
 
