@@ -144,8 +144,8 @@ class Critic(tf.keras.Model):
 
         # Evaluate the critic network on the real big boxes and the fake big boxes
         print("Shapes: ", T21_big.shape, IC_delta.shape, IC_vbv.shape, generated_boxes.shape)
-        W_real = self.call(T21_big, IC_delta, IC_vbv)
-        W_gen = self.call(generated_boxes, IC_delta, IC_vbv)
+        W_real = self.forward(T21_big, IC_delta, IC_vbv)
+        W_gen = self.forward(generated_boxes, IC_delta, IC_vbv)
 
         epsilon = tf.random.uniform(shape=[T21_big.shape[0], 1, 1, 1, 1], minval=0., maxval=1., seed=None)
         # Compute the interpolated difference between the real and generated samples
@@ -154,7 +154,7 @@ class Critic(tf.keras.Model):
         # Compute the gradients of the critic network with respect to the interpolated difference
         with tf.GradientTape() as tape:    
             tape.watch(xhat)
-            critic_output = self.call(xhat, IC_delta, IC_vbv)
+            critic_output = self.forward(xhat, IC_delta, IC_vbv)
         gradients = tape.gradient(critic_output, xhat)
         l2_norm = tf.math.reduce_euclidean_norm(gradients, axis=[1,2,3])
         gp = self.lbda * tf.square(l2_norm - 1)
@@ -195,7 +195,7 @@ class Critic(tf.keras.Model):
         #
 
         with tf.GradientTape() as disc_tape:
-            generated_boxes = generator(T21_small, IC_delta, IC_vbv)
+            generated_boxes = generator.forward(T21_small, IC_delta, IC_vbv)
             crit_loss, gp = self.critic_loss(T21_big, IC_delta, IC_vbv, generated_boxes)
 
         grad_disc = disc_tape.gradient(crit_loss, self.model.trainable_variables)
@@ -204,7 +204,7 @@ class Critic(tf.keras.Model):
         return crit_loss, gp
     
     @tf.function
-    def call(self, T21_target, IC_delta, IC_vbv):
+    def forward(self, T21_target, IC_delta, IC_vbv):
         data_target = tf.concat((T21_target, IC_delta, IC_vbv), axis=4)
         #x_out_model = self.model(data_target)
         x_out_model = self.model(inputs=[data_target])
@@ -244,7 +244,7 @@ class Generator(tf.keras.Model):
             }
         
         T21 = tf.keras.layers.UpSampling3D(size=self.upsampling, data_format="channels_last")(inputs_T21)
-        T21_, T21_pos, T21_neg = ResidualBlock(**kwargs)(T21, InceptionLayer)
+        T21_, T21_pos, T21_neg = ResidualBlock(InceptionLayer, **kwargs)(T21)
         if False:
             T21_ = InceptionLayer(input_channels=inputs_T21.shape[-1], 
                                 filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
@@ -260,7 +260,7 @@ class Generator(tf.keras.Model):
                                     activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-T21)
             
         kwargs["input_channels"] = inputs_delta.shape[-1]
-        delta_, delta_pos, delta_neg = ResidualBlock(**kwargs)(inputs_delta, InceptionLayer)
+        delta_, delta_pos, delta_neg = ResidualBlock(InceptionLayer, **kwargs)(inputs_delta)
         if False:
             delta_ = InceptionLayer(input_channels=inputs_delta.shape[-1],
                                 filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
@@ -276,7 +276,7 @@ class Generator(tf.keras.Model):
                                     activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-inputs_delta)
 
         kwargs["input_channels"] = inputs_vbv.shape[-1]
-        vbv_, vbv_pos, vbv_neg = ResidualBlock(**kwargs)(inputs_vbv, InceptionLayer)
+        vbv_, vbv_pos, vbv_neg = ResidualBlock(InceptionLayer, **kwargs)(inputs_vbv)
         if False:
             vbv_ = InceptionLayer(input_channels=inputs_vbv.shape[-1], 
                                 filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
@@ -295,7 +295,7 @@ class Generator(tf.keras.Model):
         
         kwargs["input_channels"] = data.shape[-1]
         kwargs["activation"] = self.activation
-        data_, data_pos, data_neg = ResidualBlock(**kwargs)(data, InceptionLayer)
+        data_, data_pos, data_neg = ResidualBlock(InceptionLayer, **kwargs)(data)
         if False:
             data_ = InceptionLayer(input_channels=data.shape[-1], 
                                 filters_1x1x1_7x7x7=4, filters_7x7x7=4, filters_1x1x1_5x5x5=4, 
@@ -329,7 +329,7 @@ class Generator(tf.keras.Model):
         IC_vbv = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_vbv)
         
         #W_real = critic(T21_big, IC_delta, IC_vbv)
-        W_gen = critic(generated_boxes, IC_delta, IC_vbv)
+        W_gen = critic.forward(generated_boxes, IC_delta, IC_vbv)
 
         loss = - tf.reduce_mean(W_gen) #- tf.reduce_mean(W_real - W_gen)
         return loss
@@ -343,7 +343,7 @@ class Generator(tf.keras.Model):
         #
 
         with tf.GradientTape() as gen_tape: 
-            generated_boxes = self.call(T21_small, IC_delta, IC_vbv)
+            generated_boxes = self.forward(T21_small, IC_delta, IC_vbv)
             #generated_output = Critic(generated_boxes, IC_delta, IC_vbv)
             gen_loss = self.generator_loss(T21_big, IC_delta, IC_vbv, generated_boxes, critic)
 
@@ -353,7 +353,7 @@ class Generator(tf.keras.Model):
         return gen_loss
         
     @tf.function    
-    def call(self, T21_train, IC_delta, IC_vbv):
+    def forward(self, T21_train, IC_delta, IC_vbv):
         return self.model(inputs=[T21_train, IC_delta, IC_vbv])
     
 
@@ -424,7 +424,7 @@ class InceptionLayer(tf.keras.layers.Layer):
         
         self.activation_layer = tf.keras.layers.Activation(activation)
 
-    def call(self, x):
+    def __call__(self, x):
         x1 = self.conv_1x1x1_7x7x7(x)
         x1 = self.conv_7x7x7(x1)
         
@@ -460,16 +460,19 @@ class InceptionLayer(tf.keras.layers.Layer):
         return x_out
 
 class ResidualBlock(tf.keras.layers.Layer):
-    def __init__(self, **kwargs):
+    def __init__(self, layer, **kwargs):
         super(ResidualBlock, self).__init__()
+        self.layer = layer
         self.kwargs = kwargs  # Save kwargs in an instance variable
-
-    def call(self, input, layer):
-        x1 = layer(**self.kwargs)(input)
-        x2 = layer(**self.kwargs)(input)
-        x3 = -layer(**self.kwargs)(-input)
-        return x1,x2,x3
+        self.build()
     
-generator = Generator()
-#plot_model
-tf.keras.utils.plot_model(generator.model, to_file='generator_model_3.png', show_shapes=True, show_layer_names=True, expand_nested=True)
+    def build(self):
+        self.x1 = self.layer(**self.kwargs)
+        self.x2 = self.layer(**self.kwargs)
+        self.x3 = self.layer(**self.kwargs)
+        
+    def __call__(self, input):
+        x1 = self.x1(input)
+        x2 = self.x2(input)
+        x3 = -self.x3(-input)
+        return x1,x2,x3
