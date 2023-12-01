@@ -285,7 +285,7 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     T21_lr_standardized = standardize(T21_lr, T21_lr)
     delta_standardized = standardize(delta, delta)
     vbv_standardized = standardize(vbv, vbv)
-    generated_boxes = generator(T21_lr_standardized, delta_standardized, vbv_standardized).numpy()
+    generated_boxes = generator.forward(T21_lr_standardized, delta_standardized, vbv_standardized).numpy()
 
     for i,IC in enumerate(IC_seeds):
         # Plot histograms
@@ -351,8 +351,19 @@ lbda,learning_rate = combinations[index]
 
 print("Params: ", lbda, learning_rate, flush=True)
 
+inception_kwargs = {
+            #'input_channels': self.T21_shape[-1],
+            'filters_1x1x1_7x7x7': 4,
+            'filters_7x7x7': 4,
+            'filters_1x1x1_5x5x5': 4,
+            'filters_5x5x5': 4,
+            'filters_1x1x1_3x3x3': 4,
+            'filters_3x3x3': 4,
+            'filters_1x1x1': 4,
+            'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]
+            }
 
-generator = Generator()
+generator = Generator(inception_kwargs=inception_kwargs)
 critic = Critic(lbda=lbda)
 
 
