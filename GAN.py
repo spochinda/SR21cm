@@ -360,7 +360,8 @@ inception_kwargs = {
             'filters_1x1x1_3x3x3': 4,
             'filters_3x3x3': 4,
             'filters_1x1x1': 4,
-            'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]
+            'kernel_initializer': 'glorot_uniform',#tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None), #
+            'bias_initializer': 'zeros',#tf.keras.initializers.Constant(value=0.1), #
             }
 
 generator = Generator(inception_kwargs=inception_kwargs)
@@ -423,7 +424,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(35)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(33)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
