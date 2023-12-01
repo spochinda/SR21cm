@@ -310,6 +310,12 @@ class Generator(tf.keras.Model):
                                       strides=(1, 1, 1), padding='valid', data_format="channels_last",
                                       activation=None,#tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
                                       )(data)
+        #add a trainable constant with a labda layer
+        constant1 = tf.Variable(initial_value=0.0, trainable=True, dtype=tf.float32)
+        data = tf.keras.layers.Lambda(lambda x: x + constant1)(data)
+        data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
+        constant2 = tf.Variable(initial_value=0.0, trainable=True, dtype=tf.float32)
+        data = tf.keras.layers.Lambda(lambda x: x + constant2)(data)
         
         self.model = tf.keras.Model(inputs=[inputs_T21, inputs_delta, inputs_vbv], outputs=data)
         return self.model
@@ -485,12 +491,12 @@ inception_kwargs = {
             'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]
             }
 
-#T21_lr = tf.random.normal(shape=(3,64,64,64,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
-#T21_target = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
-#IC_delta = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
-#IC_vbv = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
-#generator = Generator(T21_shape=T21_lr.shape, delta_shape=IC_delta.shape, vbv_shape=IC_vbv.shape, inception_kwargs=inception_kwargs)
-#generated_boxes = generator.forward(T21_lr, IC_delta, IC_vbv)
+T21_lr = tf.random.normal(shape=(3,64,64,64,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
+T21_target = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
+IC_delta = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
+IC_vbv = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
+generator = Generator(T21_shape=T21_lr.shape, delta_shape=IC_delta.shape, vbv_shape=IC_vbv.shape, inception_kwargs=inception_kwargs)
+generated_boxes = generator.forward(T21_lr, IC_delta, IC_vbv)
 
 #critic = Critic(delta_shape=IC_delta.shape, vbv_shape=IC_vbv.shape)
 #W_real = critic.forward(T21_target, IC_delta, IC_vbv)

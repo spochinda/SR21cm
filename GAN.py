@@ -341,7 +341,7 @@ n_critic = 10
 epochs = 200
 beta_1 = 0.5
 beta_2 = 0.999
-learning_rate= np.logspace(-6,-6,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
+learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
 lbda= np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
 
 
@@ -423,7 +423,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(33)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(35)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
