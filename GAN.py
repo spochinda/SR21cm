@@ -341,13 +341,18 @@ n_critic = 10
 epochs = 200
 beta_1 = 0.5
 beta_2 = 0.999
-learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
+#calculate decay steps from T21  and epochs. I want the learning rate to decay to 1e-5 after 200 epochs
+learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
+    initial_learning_rate=1e-3,
+    decay_steps=1000,
+    decay_rate=0.9)
+#learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
 lbda= np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
 
 
 
-combinations = list(itertools.product(lbda, learning_rate))
-lbda,learning_rate = combinations[index]
+#combinations = list(itertools.product(lbda, learning_rate))
+#lbda,learning_rate = combinations[index]
 
 print("Params: ", lbda, learning_rate, flush=True)
 
@@ -424,7 +429,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(33)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(36)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -458,6 +463,8 @@ else:
 
 
 print("Starting training...", flush=True)
+lr_generator = []
+lr_critic = []
 for e in range(epochs):
     start = time.time()
 
@@ -502,6 +509,18 @@ for e in range(epochs):
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
     if e%1 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
+        
+        #plot learning rate versus epoch
+        lr_generator.append(generator_optimizer._decayed_lr(tf.float32).numpy())
+        lr_critic.append(critic_optimizer._decayed_lr(tf.float32).numpy())
+        fig,ax = plt.subplots(1,1,figsize=(10,5))
+        ax.plot(range(len(lr_generator)), lr_generator, label="generator")
+        ax.plot(range(len(lr_critic)), lr_critic, label="critic")
+        ax.legend()
+        print("Generator learning rate: ", lr_generator, flush=True)
+        print("Critic learning rate: ", lr_critic, flush=True)
+        plt.savefig(model_path+"/learning_rate.png")
+        
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break

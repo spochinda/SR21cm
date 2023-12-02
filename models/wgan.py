@@ -321,6 +321,16 @@ class Generator(tf.keras.Model):
                                       strides=(1, 1, 1), padding='valid', data_format="channels_last",
                                       activation=None,#tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
                                       )(data)
+        
+        data = tf.keras.layers.LeakyReLU(alpha=0.1)(data) ##added 2/12
+        data = tf.keras.layers.Conv3D(filters=1,#added 2/12
+                                      kernel_size=(1, 1, 1),
+                                      kernel_initializer=self.kernel_initializer,
+                                      bias_initializer=self.bias_initializer,
+                                      strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                      activation=None,
+                                      )(data)
+
         #add a trainable constant with a labda layer
         #constant1 = tf.Variable(initial_value=1.5, trainable=True, dtype=tf.float32)
         #data = tf.keras.layers.Lambda(lambda x: x + constant1)(data)
