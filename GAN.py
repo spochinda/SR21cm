@@ -328,23 +328,51 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
             ax_vbv.legend()
 
     # Save figure
-    plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr_{1}.png".format(lbda, learning_rate))
+    plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr__.png".format(lbda, learning_rate))
 
-##check T21_lr
-#load data
-Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1010)))
+def plot_lr(resume=False):
+    # plot learning rate versus epoch
+    current_generator_lr = learning_rate_g(generator_optimizer.iterations)
+    current_critic_lr = learning_rate(critic_optimizer.iterations)
+    lr_generator.append(current_generator_lr.numpy())
+    lr_critic.append(current_critic_lr.numpy())
+    _, ax = plt.subplots(1, 1, figsize=(10, 5))  # Fix: Unused variable 'fig'
+    ax.plot(range(len(lr_generator)), lr_generator, label="generator", linewidth=2, ls="dashed")
+    ax.plot(range(len(lr_critic)), lr_critic, label="critic")
+    ax.set_xlabel("Epoch")
+    ax.set_ylabel("Learning rate")
+    ax.set_yscale("log")
+    ax.legend()
+    plt.savefig(model_path + "/learning_rate.png")
+
+def plot_anim(T21_lr, IC_delta, IC_vbv, generator, layer_name='leaky_re_lu_1'):
+    intermediate_layer_model = tf.keras.Model(inputs=generator.model.inputs, outputs=generator.model.get_layer(layer_name).output)
+    intermediate_output = intermediate_layer_model([T21_lr, IC_delta, IC_vbv])
+
+    fig,ax = plt.subplots(nrows=1,ncols=1,figsize=(10,10))
+    anim = FuncAnimation(fig, lambda i: ax.imshow(intermediate_output[0,:,:,intermediate_output.shape[-2]//2,i]), frames=intermediate_output.shape[-1])
+    anim.save(model_path + "/anim.gif", dpi=300, writer=PillowWriter(fps=1))
+
+
+## check T21_lr
+# load data
+Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000, 1010)))
 T21, delta, vbv, T21_lr = Data.data(augment=False, augments=24, low_res=True)
 
 
 
 n_critic = 10
-epochs = 200
+epochs = 400
 beta_1 = 0.5
 beta_2 = 0.999
 #calculate decay steps from T21  and epochs. I want the learning rate to decay to 1e-5 after 200 epochs
 learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
     initial_learning_rate=1e-3,
-    decay_steps=1000,
+    decay_steps=100,
+    decay_rate=0.9)
+learning_rate_g = tf.keras.optimizers.schedules.ExponentialDecay(
+    initial_learning_rate=1e-3,
+    decay_steps=10,
     decay_rate=0.9)
 #learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
 lbda= np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
@@ -373,7 +401,7 @@ generator = Generator(inception_kwargs=inception_kwargs)
 critic = Critic(lbda=lbda)
 
 
-generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
+generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
 #model.summary()
@@ -429,7 +457,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(36)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(38)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -507,20 +535,12 @@ for e in range(epochs):
 
     #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
-    if e%1 == 0:
+    if e%10 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
-        
-        #plot learning rate versus epoch
-        lr_generator.append(generator_optimizer._decayed_lr(tf.float32).numpy())
-        lr_critic.append(critic_optimizer._decayed_lr(tf.float32).numpy())
-        fig,ax = plt.subplots(1,1,figsize=(10,5))
-        ax.plot(range(len(lr_generator)), lr_generator, label="generator")
-        ax.plot(range(len(lr_critic)), lr_critic, label="critic")
-        ax.legend()
-        print("Generator learning rate: ", lr_generator, flush=True)
-        print("Critic learning rate: ", lr_critic, flush=True)
-        plt.savefig(model_path+"/learning_rate.png")
-        
+        plot_lr()
+    if e%10 == 0:
+        plot_anim(T21_lr_standardized, delta_standardized, vbv_standardized, 
+                  generator, layer_name='leaky_re_lu_1')
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
@@ -534,7 +554,6 @@ print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".f
 
 
 """
-
 #animation
 
 if False:

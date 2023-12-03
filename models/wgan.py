@@ -314,22 +314,24 @@ class Generator(tf.keras.Model):
                                     activation=tf.keras.layers.LeakyReLU(alpha=0.1))(-data)
         data = tf.keras.layers.Concatenate(axis=4)([data_, data_pos, data_neg])
 
-        data = tf.keras.layers.Conv3D(filters=1,#data.shape[-1], 
-                                      kernel_size=(1, 1, 1),
-                                      kernel_initializer=self.kernel_initializer,
-                                      bias_initializer=self.bias_initializer,
-                                      strides=(1, 1, 1), padding='valid', data_format="channels_last",
-                                      activation=None,#tf.keras.layers.Activation(self.activation)#tf.keras.layers.LeakyReLU(alpha=0.1)
-                                      )(data)
+        data = tf.keras.layers.Conv3D(filters=1,
+                          kernel_size=(1, 1, 1),
+                          kernel_initializer=self.kernel_initializer,
+                          bias_initializer=self.bias_initializer,
+                          strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                          activation=None)(data)
         
-        data = tf.keras.layers.LeakyReLU(alpha=0.1)(data) ##added 2/12
-        data = tf.keras.layers.Conv3D(filters=1,#added 2/12
-                                      kernel_size=(1, 1, 1),
-                                      kernel_initializer=self.kernel_initializer,
-                                      bias_initializer=self.bias_initializer,
-                                      strides=(1, 1, 1), padding='valid', data_format="channels_last",
-                                      activation=None,
-                                      )(data)
+        #alpha = tf.Variable(initial_value=2, trainable=True, dtype=tf.float32, name='alpha_elu_hyperparam')# added 3/12
+        #data = tf.keras.layers.ELU(alpha=alpha.numpy())(data)  # added 3/12
+        #data = tf.keras.layers.LeakyReLU(alpha=0.1)(data) ##added 3/12
+        #data = tf.keras.layers.Conv3D(filters=1,#added 2/12
+        #                              kernel_size=(1, 1, 1),
+        #                              kernel_initializer=self.kernel_initializer,
+        #                              #bias_initializer=self.bias_initializer,
+        #                              use_bias=False,
+        #                              strides=(1, 1, 1), padding='valid', data_format="channels_last",
+        #                              activation=None,
+        #                              )(data)
 
         #add a trainable constant with a labda layer
         #constant1 = tf.Variable(initial_value=1.5, trainable=True, dtype=tf.float32)
@@ -523,6 +525,12 @@ inception_kwargs = {
 #IC_vbv = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
 #generator = Generator(T21_shape=T21_lr.shape, delta_shape=IC_delta.shape, vbv_shape=IC_vbv.shape, inception_kwargs=inception_kwargs)
 #generated_boxes = generator.forward(T21_lr, IC_delta, IC_vbv)
+
+#tf.keras.utils.plot_model(generator.model, 
+#                          to_file='generator_model_2.png', 
+#                          show_shapes=True, show_layer_names=True, 
+#                          show_layer_activations=True, expand_nested=False,
+#                          show_trainable=True)
 
 #T21_target = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
 #IC_delta = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
