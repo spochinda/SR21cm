@@ -284,8 +284,12 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     T21_standardized = standardize(T21, T21_lr)
     T21_lr_standardized = standardize(T21_lr, T21_lr)
     delta_standardized = standardize(delta, delta)
-    vbv_standardized = standardize(vbv, vbv)
-    generated_boxes = generator.forward(T21_lr_standardized, delta_standardized, vbv_standardized).numpy()
+    vbv_standardized = None #standardize(vbv, vbv)
+    if vbv_standardized is not None:
+        generated_boxes = generator.forward(T21_lr_standardized, delta_standardized, vbv_standardized).numpy()
+    else:
+        generated_boxes = generator.forward(T21_lr_standardized, delta_standardized).numpy()
+        
 
     for i,IC in enumerate(IC_seeds):
         # Plot histograms
@@ -313,19 +317,21 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
             delta_std = np.std(delta_standardized[i, :, :, :, 0].numpy().flatten())
             ax_delta.imshow(delta_standardized[i, :, :, 64, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
             ax_delta.set_title("Standardized Delta IC ID={0}".format(IC))
-            ax_vbv = fig.add_subplot(gs[i+1,5])
-            vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
-            ax_vbv.imshow(vbv_standardized[i, :, :, 64, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
-            ax_vbv.set_title("Standardized Vbv IC ID={0}".format(IC))
+            if vbv_standardized is not None:
+                ax_vbv = fig.add_subplot(gs[i+1,5])
+                vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
+                ax_vbv.imshow(vbv_standardized[i, :, :, 64, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
+                ax_vbv.set_title("Standardized Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
             ax_delta = fig.add_subplot(gs[i+1,4])
             ax_delta.hist(delta_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
             ax_delta.set_title("Standardized delta IC ID={0}".format(IC))
             ax_delta.legend()
-            ax_vbv = fig.add_subplot(gs[i+1,5])
-            ax_vbv.hist(vbv_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="vbv", density=True)
-            ax_vbv.set_title("Standardized vbv IC ID={0}".format(IC))
-            ax_vbv.legend()
+            if vbv_standardized is not None:
+                ax_vbv = fig.add_subplot(gs[i+1,5])
+                ax_vbv.hist(vbv_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="vbv", density=True)
+                ax_vbv.set_title("Standardized vbv IC ID={0}".format(IC))
+                ax_vbv.legend()
 
     # Save figure
     plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr__.png".format(lbda, learning_rate))
@@ -345,12 +351,26 @@ def plot_lr(resume=False):
     ax.legend()
     plt.savefig(model_path + "/learning_rate.png")
 
-def plot_anim(T21_lr, IC_delta, IC_vbv, generator, layer_name='leaky_re_lu_1'):
+def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_name='concatenate_10'):
+    generated_boxes = generator.forward(T21_lr, IC_delta, IC_vbv)
     intermediate_layer_model = tf.keras.Model(inputs=generator.model.inputs, outputs=generator.model.get_layer(layer_name).output)
-    intermediate_output = intermediate_layer_model([T21_lr, IC_delta, IC_vbv])
+    if IC_vbv is not None:
+        intermediate_output = intermediate_layer_model([T21_lr, IC_delta, IC_vbv])
+    else:
+        intermediate_output = intermediate_layer_model([T21_lr, IC_delta])
+    fig,ax = plt.subplots(nrows=1,ncols=3,figsize=(15,10))
+    if epoch is not None:
+        fig.suptitle("Epoch {0}".format(epoch))
 
-    fig,ax = plt.subplots(nrows=1,ncols=1,figsize=(10,10))
-    anim = FuncAnimation(fig, lambda i: ax.imshow(intermediate_output[0,:,:,intermediate_output.shape[-2]//2,i]), frames=intermediate_output.shape[-1])
+    def update(i):
+        ax[0].imshow(T21_big[0,:,:,T21_big.shape[-2]//2,0])
+        ax[0].set_title("T21 big box")
+        ax[1].imshow(generated_boxes[0,:,:,generated_boxes.shape[-2]//2,0])
+        ax[1].set_title("T21_lr passed \nthrough full generator")
+        ax[2].imshow(intermediate_output[0,:,:,intermediate_output.shape[-2]//2,i])
+        ax[2].set_title("T21_lr passed \nthrough {0} \nFeature map, channel {1}".format(layer_name,i))
+
+    anim = FuncAnimation(fig, update, frames=intermediate_output.shape[-1])
     anim.save(model_path + "/anim.gif", dpi=300, writer=PillowWriter(fps=1))
 
 
@@ -397,16 +417,16 @@ inception_kwargs = {
             'bias_initializer': 'zeros',#tf.keras.initializers.Constant(value=0.1), #
             }
 
-generator = Generator(inception_kwargs=inception_kwargs)
-critic = Critic(lbda=lbda)
+generator = Generator(inception_kwargs=inception_kwargs, vbv_shape=None)
+critic = Critic(lbda=lbda, vbv_shape=None)
 
 
 generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
 #model.summary()
-#tf.keras.utils.plot_model(generator.model, 
-#                          to_file=path+'/plots/generator_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+tf.keras.utils.plot_model(generator.model, 
+                          to_file=path+'/plots/generator_model_3.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 #tf.keras.utils.plot_model(critic.model,
 #                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 
@@ -457,7 +477,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(38)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(39)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -505,14 +525,17 @@ for e in range(epochs):
         T21_standardized = standardize(T21, T21_lr)
         T21_lr_standardized = standardize(T21_lr, T21_lr)
         delta_standardized = standardize(delta, delta)
-        vbv_standardized = standardize(vbv, vbv)
-        
-        crit_loss, gp = critic.train_step_critic(T21_standardized, delta_standardized, vbv_standardized, T21_lr_standardized, critic_optimizer, generator)
+        vbv_standardized = None #standardize(vbv, vbv)
+        try:
+            crit_loss, gp = critic.train_step_critic(generator=generator, optimizer=critic_optimizer, T21_big=T21_standardized, 
+                                                    T21_small=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
+        except Exception as e:
+            print(e)
         critic_losses.append(crit_loss)
         gradient_penalty.append(gp)
-
         if i%n_critic == 0:
-            gen_loss = generator.train_step_generator(T21_lr_standardized, T21_standardized, delta_standardized, vbv_standardized, generator_optimizer, critic)
+            gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
+                                                      T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
             generator_losses.append(gen_loss)
         
         print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
@@ -535,12 +558,12 @@ for e in range(epochs):
 
     #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
-    if e%10 == 0:
+    if e%1 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
         plot_lr()
-    if e%10 == 0:
-        plot_anim(T21_lr_standardized, delta_standardized, vbv_standardized, 
-                  generator, layer_name='leaky_re_lu_1')
+    if e%1 == 0:
+        #def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_name='concatenate_10'):
+        plot_anim(generator=generator, T21_big=T21_standardized, T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, epoch=e, layer_name='concatenate_21')
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
