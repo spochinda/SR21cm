@@ -334,6 +334,9 @@ class Generator(tf.keras.Model):
                           strides=(1, 1, 1), padding='valid', data_format="channels_last",
                           activation=None)(data)
         
+        PeLU_activation = PeLU(a=10.0, b=10.0, c=1.0, trainable=True)
+        data = PeLU_activation(data)
+        
         #alpha = tf.Variable(initial_value=2, trainable=True, dtype=tf.float32, name='alpha_elu_hyperparam')# added 3/12
         #data = tf.keras.layers.ELU(alpha=alpha.numpy())(data)  # added 3/12
         #data = tf.keras.layers.LeakyReLU(alpha=0.1)(data) ##added 3/12
@@ -364,13 +367,12 @@ class Generator(tf.keras.Model):
         IC_delta = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_delta)
         if IC_vbv != None:
             IC_vbv = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_vbv)
-
-        #IC_vbv = tf.keras.layers.Cropping3D(cropping=(6, 6, 6),data_format="channels_last")(IC_vbv)
         
-        #W_real = critic(T21_big, IC_delta, IC_vbv)
+        W_real = critic.forward(T21_big, IC_delta, IC_vbv)
         W_gen = critic.forward(generated_boxes, IC_delta, IC_vbv)
 
-        loss = - tf.reduce_mean(W_gen) #- tf.reduce_mean(W_real - W_gen)
+        loss = - tf.reduce_mean(W_gen - W_real) #- tf.reduce_mean(- W_gen)
+        #loss = tf.reduce_mean(tf.math.reduce_euclidean_norm(T21_big-generated_boxes, axis=[1,2,3])) #l2 norm loss
         return loss
 
     @tf.function
@@ -526,6 +528,51 @@ class ResidualBlock(tf.keras.layers.Layer):
         x3 = -self.x3(-input)
         return x1,x2,x3
 
+class PeLU(tf.keras.layers.Layer):
+    """``PeLU``."""
+    def __init__(self,
+                a: float = 1.,
+                b: float = 1.,
+                c: float = 1.,
+                trainable: bool = False,
+                **kwargs):
+        super().__init__(**kwargs)
+        self.a = a
+        self.b = b
+        self.c = c
+        self.trainable = trainable
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.a_factor = tf.Variable(
+            self.a,
+            dtype=tf.float32,
+            trainable=self.trainable,
+            name="a_factor")
+
+        self.b_factor = tf.Variable(
+            self.b,
+            dtype=tf.float32,
+            name="b_factor")
+
+        self.c_factor = tf.Variable(
+            self.c,
+            dtype=tf.float32,
+            name="c_factor")
+
+    def call(self, inputs):
+        res = tf.where(inputs >= 0, self.c_factor * inputs, self.a_factor * (tf.exp(inputs / self.b_factor) - 1))
+        return res
+
+    def get_config(self):
+        config = {
+            "a": self.get_weights()[0] if self.trainable else self.a,
+            "b": self.get_weights()[1] if self.trainable else self.b,
+            "c": self.get_weights()[2] if self.trainable else self.c,
+            "trainable": self.trainable
+        }
+        #base_config = super().get_config()
+        return config #dict(list(base_config.items()) + list(config.items()))
 #test generator and critic on noise
 inception_kwargs = {
             #'input_channels': self.T21_shape[-1],
@@ -541,58 +588,52 @@ inception_kwargs = {
             #'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]
             }
 
-T21_lr = tf.random.normal(shape=(3,64,64,64,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
-IC_delta = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
-IC_vbv = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
-generator = Generator(T21_shape=T21_lr.shape, delta_shape=IC_delta.shape, vbv_shape=None,#IC_vbv.shape, 
-                      inception_kwargs=inception_kwargs)
+#T21_lr = tf.random.normal(shape=(3,64,64,64,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
+#IC_delta = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
+#IC_vbv = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
+#generator = Generator(T21_shape=T21_lr.shape, delta_shape=IC_delta.shape, vbv_shape=None,#IC_vbv.shape, 
+#                      inception_kwargs=inception_kwargs)
 #generated_boxes = generator.forward(T21_lr, IC_delta, )
 
-tf.keras.utils.plot_model(generator.model, 
-                          to_file='generator_model_3.png', 
-                          show_shapes=True, show_layer_names=True, 
-                          show_layer_activations=True, expand_nested=False,
-                          show_trainable=True)
+#tf.keras.utils.plot_model(generator.model, 
+#                          to_file='generator_model_3.png', 
+#                          show_shapes=True, show_layer_names=True, 
+#                          show_layer_activations=True, expand_nested=False,
+#                          show_trainable=True)
 
-T21_target = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
+#T21_target = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
 #IC_delta = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
 #IC_vbv = None #tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
 #critic = Critic(vbv_shape=None)
 #W_real = critic.forward(T21_target, IC_delta, IC_vbv)
 #W_gen = critic.forward(generated_boxes, IC_delta, IC_vbv)
-
+"""
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation, PillowWriter
+import numpy as np
+def standardize(data, data_stats):
+    mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
+    mean = mean.numpy()
+    var = var.numpy()
+    for i,(m,v) in enumerate(zip(mean,var)):
+        if m==0 and v==0:
+            mean[i] = 0
+            var[i] = 1
+            #print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
+    std = var**0.5
+    return (data - mean) / std
 
-def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_name='concatenate_10'):
-    generated_boxes = generator.forward(T21_lr, IC_delta, IC_vbv)
-    intermediate_layer_model = tf.keras.Model(inputs=generator.model.inputs, outputs=generator.model.get_layer(layer_name).output)
-    if IC_vbv is not None:
-        
-        intermediate_output = intermediate_layer_model([T21_lr, IC_delta, IC_vbv])
+fig, axes = plt.subplots(1,4,figsize=(20,5))
 
-    else:
-        intermediate_output = intermediate_layer_model([T21_lr, IC_delta])
-    
-    fig,ax = plt.subplots(nrows=1,ncols=3,figsize=(15,10))
-    #figure title
-    if epoch is not None:
-        fig.suptitle("Epoch {0}".format(epoch))
+T21_target_standardized = standardize(T21_target, T21_target)
+T21_std = np.std(T21_target_standardized[0,:,:,:,:].numpy().flatten())
+axes[0].imshow(T21_target_standardized[0,:,:,T21_target_standardized.shape[3]//2,0].numpy().squeeze(), vmin=-3*T21_std, vmax=3*T21_std)
 
-    def update(i):
-        ax[0].imshow(T21_big[0,:,:,T21_big.shape[-2]//2,0])
-        ax[0].set_title("T21 big box")
+#pelu activation
+act = PeLU(a=10.0, b=10.0, c=1.0, trainable=False)
+axes[1].imshow(act(T21_target_standardized)[0,:,:,T21_target_standardized.shape[3]//2,0].numpy().squeeze(), vmin=-3*T21_std, vmax=3*T21_std)
 
-        ax[1].imshow(generated_boxes[0,:,:,generated_boxes.shape[-2]//2,0])
-        ax[1].set_title("T21_lr passed \nthrough full generator")
-
-        ax[2].imshow(intermediate_output[0,:,:,intermediate_output.shape[-2]//2,i])
-        ax[2].set_title("T21_lr passed \nthrough {0} \nFeature map, channel {1}".format(layer_name,i))
-
-
-
-    
-    anim = FuncAnimation(fig, update, frames=intermediate_output.shape[-1])
-    anim.save("anim.gif", dpi=300, writer=PillowWriter(fps=1))
-
-plot_anim(T21_big=T21_target, T21_lr=T21_lr, IC_delta=IC_delta, IC_vbv=None, generator=generator, epoch=1, layer_name='concatenate_10')
+axes[2].hist(T21_target_standardized[0,:,:,:,:].numpy().flatten(), density=True, bins=100, alpha=0.5, label="real")
+axes[3].hist(act(T21_target_standardized)[0,:,:,:,:].numpy().flatten(), density=True, bins=100, alpha=0.5, label="fake")
+plt.savefig("pelu_activation3.png")
+"""
+#print("a b and c pelu parameters: ", act.get_config())
