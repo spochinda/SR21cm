@@ -421,8 +421,21 @@ inception_kwargs = {
 generator = Generator(inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(lbda=lbda, vbv_shape=None)
 
+optimizers = [
+    tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2),
+    tf.keras.optimizers.Adam(learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
+        initial_learning_rate=1,
+        decay_steps=10,
+        decay_rate=0.9), 
+        beta_1=beta_1, beta_2=beta_2)
+        ]
 
-generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
+optimizers_and_layers = [(optimizers[0], generator.model.layers[:-1]), (optimizers[1], generator.model.layers[-1])]
+
+import tensorflow_addons as tfa
+generator_optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
+
+#generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
 
@@ -536,10 +549,10 @@ for e in range(epochs):
         critic_losses.append(crit_loss)
         gradient_penalty.append(gp)
         if i%n_critic == 0:
-            print("PeLU settings before optimizing:", generator.model.get_layer("pe_lu_2").get_config())
+            print("PeLU settings before optimizing:", generator.model.get_layer("pe_lu").get_config())
             gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
                                                       T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
-            print("PeLU settings after optimizing:", generator.model.get_layer("pe_lu_2").get_config())
+            print("PeLU settings after optimizing:", generator.model.get_layer("pe_lu").get_config())
             generator_losses.append(gen_loss)
         
         print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
