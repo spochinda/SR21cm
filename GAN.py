@@ -252,16 +252,20 @@ dataset = tf.data.Dataset.from_generator(Data.generator_func,
 
 
 
-def standardize(data, data_stats):
+def standardize(data, data_stats, keep_ionized = False):
+    #subtract mean if non-zero minimum and divide by std, otherwise only divide by std
     mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
-    mean = mean.numpy()
-    var = var.numpy()
-    for i,(m,v) in enumerate(zip(mean,var)):
-        if m==0 and v==0:
+    mean = mean.numpy()#.flatten()
+    min_val = tf.reduce_min(data_stats,axis=[1,2,3],keepdims=True).numpy()#.flatten()
+    var = var.numpy()#.flatten()    
+    for i,(m,v,m_) in enumerate(zip(mean,var,min_val)):
+        if (m==0) and (v==0) and (m_==0):
             mean[i] = 0
             var[i] = 1
-            #print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
+        elif (m!=0) and (v!=0) and (m_==0) and (keep_ionized):
+            mean[i] = 0
     std = var**0.5
+
     return (data - mean) / std
 
 def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
@@ -276,6 +280,9 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     ax_loss.set_title("lambda={0}, learning rate={1}".format(lbda, learning_rate))
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Loss")
+    ax_loss.set_yscale("symlog")
+    ax_loss.grid()
+    
     ax_loss.legend()
 
     # Validation data
@@ -302,25 +309,28 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
 
         # Plot real and generated data
         T21_std = np.std(T21_standardized[i, :, :, :, 0].numpy().flatten())
+        T21_mean = np.mean(T21_standardized[i, :, :, :, 0].numpy().flatten())
         ax_gen = fig.add_subplot(gs[i+1,1])
-        ax_gen.imshow(generated_boxes[i, :, :, generated_boxes.shape[-2]//2, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_gen.imshow(generated_boxes[i, :, :, generated_boxes.shape[-2]//2, 0], vmin=T21_mean-sigmas*T21_std, vmax=T21_mean+sigmas*T21_std)
         ax_gen.set_title("Generated")
         ax_real = fig.add_subplot(gs[i+1,2])
-        ax_real.imshow(T21_standardized[i, :, :, T21_standardized.shape[-2]//2, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_real.imshow(T21_standardized[i, :, :, T21_standardized.shape[-2]//2, 0], vmin=T21_mean-sigmas*T21_std, vmax=T21_mean+sigmas*T21_std)
         ax_real.set_title("Real")
         ax_real_lr = fig.add_subplot(gs[i+1,3])
-        ax_real_lr.imshow(T21_lr_standardized[i, :, :, T21_lr_standardized.shape[-2]//2, 0], vmin=-sigmas*T21_std, vmax=sigmas*T21_std)
+        ax_real_lr.imshow(T21_lr_standardized[i, :, :, T21_lr_standardized.shape[-2]//2, 0], vmin=T21_mean-sigmas*T21_std, vmax=T21_mean+sigmas*T21_std)
         ax_real_lr.set_title("Real lr")
 
         if plot_slice:
             ax_delta = fig.add_subplot(gs[i+1,4])
             delta_std = np.std(delta_standardized[i, :, :, :, 0].numpy().flatten())
-            ax_delta.imshow(delta_standardized[i, :, :, delta_standardized.shape[-2]//2, 0], vmin=-sigmas*delta_std, vmax=sigmas*delta_std)
+            delta_mean = np.mean(delta_standardized[i, :, :, :, 0].numpy().flatten())
+            ax_delta.imshow(delta_standardized[i, :, :, delta_standardized.shape[-2]//2, 0], vmin=delta_mean-sigmas*delta_std, vmax=delta_mean+sigmas*delta_std)
             ax_delta.set_title("Standardized Delta IC ID={0}".format(IC))
             if vbv_standardized is not None:
                 ax_vbv = fig.add_subplot(gs[i+1,5])
                 vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
-                ax_vbv.imshow(vbv_standardized[i, :, :, vbv_standardized.shape[-2]//2, 0], vmin=-sigmas*vbv_std, vmax=sigmas*vbv_std)
+                vbv_mean = np.mean(vbv_standardized[i, :, :, :, 0].numpy().flatten())
+                ax_vbv.imshow(vbv_standardized[i, :, :, vbv_standardized.shape[-2]//2, 0], vmin=vbv_mean-sigmas*vbv_std, vmax=vbv_mean+sigmas*vbv_std)
                 ax_vbv.set_title("Standardized Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
             ax_delta = fig.add_subplot(gs[i+1,4])
@@ -335,6 +345,7 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
 
     # Save figure
     plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr__.png".format(lbda, learning_rate))
+    plt.close()
 
 def plot_lr(resume=False):
     # plot learning rate versus epoch
@@ -350,6 +361,7 @@ def plot_lr(resume=False):
     ax.set_yscale("log")
     ax.legend()
     plt.savefig(model_path + "/learning_rate.png")
+    plt.close()
 
 def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_name='concatenate_10', sigmas=3):
     generated_boxes = generator.forward(T21_lr, IC_delta, IC_vbv)
@@ -373,6 +385,7 @@ def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_na
 
     anim = FuncAnimation(fig, update, frames=intermediate_output.shape[-1])
     anim.save(model_path + "/anim.gif", dpi=300, writer=PillowWriter(fps=1))
+    plt.close()
 
 
 ## check T21_lr
@@ -388,11 +401,11 @@ beta_1 = 0.5
 beta_2 = 0.999
 #calculate decay steps from T21  and epochs. I want the learning rate to decay to 1e-5 after 200 epochs
 learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=1e-3,
+    initial_learning_rate=3e-3,
     decay_steps=100,
     decay_rate=0.9)
 learning_rate_g = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=1e-3,
+    initial_learning_rate=3e-3,
     decay_steps=10,
     decay_rate=0.9)
 #learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
@@ -421,21 +434,20 @@ inception_kwargs = {
 generator = Generator(inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(lbda=lbda, vbv_shape=None)
 
-optimizers = [
-    tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2),
-    tf.keras.optimizers.Adam(learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
-        initial_learning_rate=1,
-        decay_steps=10,
-        decay_rate=0.9), 
-        beta_1=beta_1, beta_2=beta_2)
-        ]
+if False:
+    import tensorflow_addons as tfa
+    optimizers = [
+        tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2),
+        tf.keras.optimizers.Adam(learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
+            initial_learning_rate=1e-1,
+            decay_steps=10,
+            decay_rate=0.9), 
+            beta_1=beta_1, beta_2=beta_2)
+            ]
+    optimizers_and_layers = [(optimizers[0], generator.model.layers[:-1]), (optimizers[1], generator.model.layers[-1])]
+    generator_optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
 
-optimizers_and_layers = [(optimizers[0], generator.model.layers[:-1]), (optimizers[1], generator.model.layers[-1])]
-
-import tensorflow_addons as tfa
-generator_optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
-
-#generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
+generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
 
@@ -444,29 +456,6 @@ critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=
 #                          to_file=path+'/plots/generator_model_3.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 #tf.keras.utils.plot_model(critic.model,
 #                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
-
-
-
-
-###Test Generator methods:
-###generator.build_generator_model and call
-#print(generator(test[0:2,:,:,:,10:11], delta[0:2,:,:,:,0:1], vbv[0:2,:,:,:,0:1]).shape) #passed
-###generator.generator_loss
-#print("gen loss", generator.generator_loss(T21_target[0:2,:,:,:,10:11], delta[0:2,:,:,:,0:1], vbv[0:2,:,:,:,0:1], generator(test[0:2,:,:,:,10:11], delta[0:2,:,:,:,0:1], vbv[0:2,:,:,:,0:1]) , critic)) #passed
-###generator.train_step_generator
-#print(generator.train_step_generator(test[0:2,:,:,:,10:11], T21_target[0:2,:,:,:,10:11], delta[0:2,:,:,:,0:1], vbv[0:2,:,:,:,0:1], generator_optimizer, critic) )
-
-
-
-
-###Test Critic methods:
-###critic.build_critic_model and call
-#print(critic(T21_target[0:2,:,:,:,10:11], delta[0:2,:,:,:,0:1], vbv[0:2,:,:,:,0:1])) #passed
-###critic.critic_loss
-#print("loss: ", critic.critic_loss(T21_target[0:1,:,:,:,10:11], delta[0:1,:,:,:,0:1], vbv[0:1,:,:,:,0:1], generator(test[0:1,:,:,:,10:11], delta[0:1,:,:,:,0:1], vbv[0:1,:,:,:,0:1]) )) #passed
-###critic.train_step_critic
-#l,gp = critic.train_step_critic(T21_target[0:1,:,:,:,10:11], delta[0:1,:,:,:,0:1], vbv[0:1,:,:,:,0:1], test[0:1,:,:,:,10:11], critic_optimizer, generator)
-#print("train loss: ", l,gp,l-gp )
 
 
 
@@ -492,7 +481,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(42)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(43)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -501,7 +490,7 @@ ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.
                            )
 manager = tf.train.CheckpointManager(ckpt, model_path+"/checkpoints", max_to_keep=5)
 
-resume = False
+resume = True
 
 if resume:
     weights_before = generator.model.get_weights()
@@ -537,10 +526,11 @@ for e in range(epochs):
     for i, (T21, delta, vbv, T21_lr) in enumerate(batches):
         #print("shape inputs: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
         start_start = time.time()
-        T21_standardized = standardize(T21, T21_lr)
-        T21_lr_standardized = standardize(T21_lr, T21_lr)
-        delta_standardized = standardize(delta, delta)
+        T21_standardized = standardize(T21, T21_lr, keep_ionized=False)
+        T21_lr_standardized = standardize(T21_lr, T21_lr, keep_ionized=False)
+        delta_standardized = standardize(delta, delta, keep_ionized=False)
         vbv_standardized = None #standardize(vbv, vbv)
+        
         try:
             crit_loss, gp = critic.train_step_critic(generator=generator, optimizer=critic_optimizer, T21_big=T21_standardized, 
                                                     T21_small=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
@@ -549,10 +539,10 @@ for e in range(epochs):
         critic_losses.append(crit_loss)
         gradient_penalty.append(gp)
         if i%n_critic == 0:
-            print("PeLU settings before optimizing:", generator.model.get_layer("pe_lu").get_config())
+            #print("Output activation settings before optimizing:", generator.model.get_layer("pe_lu").get_config())
             gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
                                                       T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
-            print("PeLU settings after optimizing:", generator.model.get_layer("pe_lu").get_config())
+            #print("Output activation settings after optimizing:", generator.model.get_layer("pe_lu").get_config())
             generator_losses.append(gen_loss)
         
         print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
@@ -579,13 +569,14 @@ for e in range(epochs):
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
         plot_lr()
     if e%1 == 0:
-        #def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_name='concatenate_10'):
         plot_anim(generator=generator, T21_big=T21_standardized, 
                   T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
-                  epoch=e, layer_name='concatenate_21', sigmas=3)
+                  epoch=e, layer_name='conv3d_72', sigmas=3)
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
+
+    
 
 
 

@@ -334,8 +334,10 @@ class Generator(tf.keras.Model):
                           strides=(1, 1, 1), padding='valid', data_format="channels_last",
                           activation=None)(data)
         
-        PeLU_activation = PeLU(a=10.0, b=10.0, c=1.0, trainable=True)
-        data = PeLU_activation(data)
+        #PeLU_activation = PeLU(trainable=True)#(a=2.512, b=1.0, c=1.0, trainable=True)
+        #data = PeLU_activation(data)
+        #CustomAct = CustomActivation(a=-0.5, trainable=True)
+        #data = CustomAct(data)
         
         #alpha = tf.Variable(initial_value=2, trainable=True, dtype=tf.float32, name='alpha_elu_hyperparam')# added 3/12
         #data = tf.keras.layers.ELU(alpha=alpha.numpy())(data)  # added 3/12
@@ -531,7 +533,7 @@ class ResidualBlock(tf.keras.layers.Layer):
 class PeLU(tf.keras.layers.Layer):
     """``PeLU``."""
     def __init__(self,
-                a: float = 1.,
+                a: float = 2.512,
                 b: float = 1.,
                 c: float = 1.,
                 trainable: bool = False,
@@ -547,17 +549,19 @@ class PeLU(tf.keras.layers.Layer):
         self.a_factor = tf.Variable(
             self.a,
             dtype=tf.float32,
-            trainable=self.trainable,
+            trainable=False, #self.trainable,
             name="a_factor")
 
         self.b_factor = tf.Variable(
             self.b,
             dtype=tf.float32,
+            trainable=self.trainable,
             name="b_factor")
 
         self.c_factor = tf.Variable(
             self.c,
             dtype=tf.float32,
+            trainable=False, #self.trainable,
             name="c_factor")
 
     def call(self, inputs):
@@ -569,6 +573,36 @@ class PeLU(tf.keras.layers.Layer):
             "a": self.get_weights()[0] if self.trainable else self.a,
             "b": self.get_weights()[1] if self.trainable else self.b,
             "c": self.get_weights()[2] if self.trainable else self.c,
+            "trainable": self.trainable
+        }
+        #base_config = super().get_config()
+        return config #dict(list(base_config.items()) + list(config.items()))
+    
+class CustomActivation(tf.keras.layers.Layer):
+    """``PeLU``."""
+    def __init__(self,
+                a: float = 1.,
+                trainable: bool = False,
+                **kwargs):
+        super().__init__(**kwargs)
+        self.a = a
+        self.trainable = trainable
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.a_factor = tf.Variable(
+            self.a,
+            dtype=tf.float32,
+            trainable=self.trainable,
+            name="a_factor")
+        
+    def call(self, inputs):
+        res = tf.where(inputs >= self.a_factor, inputs, self.a_factor)
+        return res
+
+    def get_config(self):
+        config = {
+            "a": self.get_weights()[0] if self.trainable else self.a,
             "trainable": self.trainable
         }
         #base_config = super().get_config()
@@ -636,4 +670,23 @@ axes[2].hist(T21_target_standardized[0,:,:,:,:].numpy().flatten(), density=True,
 axes[3].hist(act(T21_target_standardized)[0,:,:,:,:].numpy().flatten(), density=True, bins=100, alpha=0.5, label="fake")
 plt.savefig("pelu_activation3.png")
 """
-#print("a b and c pelu parameters: ", act.get_config())
+#show pelu activation for varying parameters
+"""
+import numpy as np
+import matplotlib.pyplot as plt
+a = 2.5 #np.logspace(-2, 1, num=4)
+b = np.linspace(0.1, 5.0, num=16)
+
+fig, axes = plt.subplots(4,4,figsize=(20,10))
+x = np.linspace(-5,5,100)
+for i in range(4):
+    for j in range(4):
+        k = np.ravel_multi_index((i,j), (4,4))
+        act = PeLU(a=a, b=b[k], c=1.0, trainable=False)
+        axes[i,j].plot(x, act(x), label="a={0:.2f}, b={1:.2f}".format(a,b[k]))
+        axes[i,j].plot(x, x, label="identity")
+        axes[i,j].legend()
+
+"""
+#plt.savefig("pelu_activation.png")
+
