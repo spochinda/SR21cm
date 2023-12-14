@@ -1,6 +1,7 @@
 IC/
 notebooks/*
 outputs/
+analysis/
 plots/*
 trained_models/*
 !plots/critic_model.png
