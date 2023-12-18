@@ -172,17 +172,17 @@ T21, delta, vbv, T21_lr = Data.data(augment=False, augments=24, low_res=True)
 
 
 n_critic = 10
-epochs = 400
+epochs = 10000
 beta_1 = 0.5
 beta_2 = 0.999
 #calculate decay steps from T21  and epochs. I want the learning rate to decay to 1e-5 after 200 epochs
 learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=3e-3,
-    decay_steps=100,
+    initial_learning_rate=1e-2,#3e-3,
+    decay_steps=300,#100,
     decay_rate=0.9)
 learning_rate_g = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=3e-3,
-    decay_steps=10,
+    initial_learning_rate=1e-2,#3e-3,
+    decay_steps=30,#10,
     decay_rate=0.9)
 #learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
 lbda= np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
@@ -211,8 +211,8 @@ inception_kwargs = {
             'padding': 'valid',
             }
 
-generator = Generator(inception_kwargs=inception_kwargs, vbv_shape=None)
-critic = Critic(lbda=lbda, vbv_shape=None)
+generator = Generator(network_model='original', inception_kwargs=inception_kwargs, vbv_shape=None)
+critic = Critic(lbda=lbda, vbv_shape=None, network_model='original')
 
 if False:
     import tensorflow_addons as tfa
@@ -233,7 +233,7 @@ critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=
 
 #model.summary()
 #tf.keras.utils.plot_model(generator.model, 
-#                          to_file=path+'/plots/generator_model_3.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+#                          to_file=path+'/plots/generator_model_original.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 #tf.keras.utils.plot_model(critic.model,
 #                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 
@@ -253,7 +253,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(43)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(47)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -340,10 +340,10 @@ for e in range(epochs):
     if e%1 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
         plot_lr()
-    if e%1 == 0:
-        plot_anim(generator=generator, T21_big=T21_standardized, 
-                  T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
-                  epoch=e, layer_name='conv3d_72', sigmas=3)
+    #if e%1 == 0:
+        #plot_anim(generator=generator, T21_big=T21_standardized, 
+                  #T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
+                  #epoch=e, layer_name='conv3d_72', sigmas=3)
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
