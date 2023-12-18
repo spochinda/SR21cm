@@ -344,6 +344,10 @@ for e in range(epochs):
         #plot_anim(generator=generator, T21_big=T21_standardized, 
                   #T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
                   #epoch=e, layer_name='conv3d_72', sigmas=3)
+    #if e%1 == 0:
+        #plot_anim(generator=generator, T21_big=T21_standardized, 
+                  #T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
+                  #epoch=e, layer_name='conv3d_72', sigmas=3)
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
