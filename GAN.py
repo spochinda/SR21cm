@@ -253,7 +253,7 @@ print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(43)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(46)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -340,10 +340,10 @@ for e in range(epochs):
     if e%1 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
         plot_lr()
-    if e%1 == 0:
-        plot_anim(generator=generator, T21_big=T21_standardized, 
-                  T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
-                  epoch=e, layer_name='conv3d_72', sigmas=3)
+    #if e%1 == 0:
+        #plot_anim(generator=generator, T21_big=T21_standardized, 
+                  #T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
+                  #epoch=e, layer_name='conv3d_72', sigmas=3)
 
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
