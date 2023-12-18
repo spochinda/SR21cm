@@ -232,8 +232,8 @@ critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=
 
 
 #model.summary()
-#tf.keras.utils.plot_model(generator.model, 
-#                          to_file=path+'/plots/generator_model_original.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+tf.keras.utils.plot_model(generator.model, 
+                          to_file=path+'/plots/generator_model_original.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 #tf.keras.utils.plot_model(critic.model,
 #                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 
