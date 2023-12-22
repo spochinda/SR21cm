@@ -310,6 +310,7 @@ class Generator(tf.keras.Model):
 
             data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
             data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
+            #data = tf.keras.layers.ELU()(data) #array1
             
         
         data = tf.keras.layers.Conv3D(filters=1,
@@ -318,6 +319,16 @@ class Generator(tf.keras.Model):
                             bias_initializer=self.bias_initializer,
                             strides=(1, 1, 1), padding='valid', data_format="channels_last",
                             activation=None)(data)
+        
+        #data = ClippingLayer(a = -4.5, sensitivity=1e-1, min_value = -5., max_value = -4.,trainable = True)(data) #array3
+
+        #data = tf.keras.layers.ReLU()(data) #array2
+        #data = tf.keras.layers.Conv3D(filters=1,
+        #                    kernel_size=(1, 1, 1),
+        #                    kernel_initializer=self.kernel_initializer,
+        #                    bias_initializer=self.bias_initializer,
+        #                    strides=(1, 1, 1), padding='valid', data_format="channels_last",
+        #                    activation=None)(data) #array2
         
         if self.vbv_shape != None:
             self.model = tf.keras.Model(inputs=[inputs_T21, inputs_delta, inputs_vbv], outputs=data)
@@ -561,6 +572,42 @@ class CustomActivation(tf.keras.layers.Layer):
         }
         #base_config = super().get_config()
         return config #dict(list(base_config.items()) + list(config.items()))
+
+class ClippingLayer(tf.keras.layers.Layer):
+    def __init__(self,
+                a: float = -4.5,
+                sensitivity: float = 1e-1,
+                min_value: float = -6.,
+                max_value: float = -4.,
+                trainable: bool = False,
+                **kwargs):
+        super().__init__(**kwargs)
+        self.a = a
+        self.sensitivity = sensitivity
+        self.min_value = min_value
+        self.max_value = max_value
+        self.trainable = trainable
+
+    def build(self, input_shape):
+        super().build(input_shape)
+        self.a_factor = tf.Variable(
+            self.a*self.sensitivity,
+            dtype=tf.float32,
+            trainable=self.trainable,
+            constraint=tf.keras.constraints.MinMaxNorm(min_value=self.min_value*self.sensitivity ,max_value=self.min_value*self.sensitivity,axis=None),
+            name="a_factor")
+
+    def call(self, inputs):
+        #print("Clipping values: ", self.a_factor/self.sensitivity, self.min_value, self.max_value, self.sensitivity,flush=True)
+        res = tf.where(inputs > self.a_factor / self.sensitivity, inputs, self.a_factor / self.sensitivity)
+        return res
+
+generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
+                      bias_initializer='zeros', 
+                      network_model='original', inception_kwargs=inception_kwargs, vbv_shape=None)
+
+#print(dir(generator.model.layers[-1]))
+#print(generator.model.layers[-1].trainable_variables)
 #test generator and critic on noise
 
 

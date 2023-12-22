@@ -145,8 +145,8 @@ class DataManager:
                     #                                           activation=None,
                     #                                           )(temp).numpy().reshape(64,64,64)
                     #try average pooling 
-                    #T21_lr[i,:,:,:,j] = tf.keras.layers.AveragePooling3D(pool_size=(2, 2, 2), strides=(2, 2, 2), padding='valid', data_format="channels_last")(temp).numpy().reshape(64,64,64)  
-                    T21_lr[i,:,:,:,j] = temp[0,::2,::2,::2,0].numpy()
+                    T21_lr[i,:,:,:,j] = tf.keras.layers.AveragePooling3D(pool_size=(2, 2, 2), strides=(2, 2, 2), padding='valid', data_format="channels_last")(temp).numpy().reshape(64,64,64)  
+                    #T21_lr[i,:,:,:,j] = temp[0,::2,::2,::2,0].numpy()
                     
                     #fig,axes = plt.subplots(1,1,figsize=(10,5))
                     #axes[0].imshow(T21[i,:,:,64,j])
@@ -201,6 +201,32 @@ class Plotting:
     def __init__(self, path):
         self.path = path
 
+def calculate_power_spectrum(data_x, Lpix=3, kbins=100):
+    
+    #Simulation box variables
+    Npix = data_x.shape[0]
+    Vpix = Lpix**3
+    Lbox = Npix * Lpix
+    Vbox = Lbox**3
+
+    #Calculating wavevectors k for the simulation grid
+    kspace = np.fft.fftfreq(Npix, d=Lpix/(2*np.pi))
+    kx, ky, kz = np.meshgrid(kspace,kspace,kspace)
+    k = np.sqrt(kx**2 + ky**2 + kz**2)
+
+    #Dont need to scipy.fft.fftshift since kspace isn't fftshift'ed
+    data_k = np.fft.fftn(data_x)
+
+    #Bin k values and calculate power spectrum
+    k_bin_edges = np.geomspace(np.min(k[np.nonzero(k)]), np.max(k), endpoint=True, num=kbins+1)
+    k_vals = np.zeros(kbins)
+    P_k = np.zeros(kbins)
+    for i in range(kbins):
+        cond = ((k >= k_bin_edges[i]) & (k < k_bin_edges[i+1]))
+        k_vals[i] = (k_bin_edges[i+1] + k_bin_edges[i])/2
+        P_k[i] = (Vpix/Vbox) * Vpix * np.average(np.absolute(data_k[cond]))**2
+        
+    return k_vals, P_k
 
 """
 #Examples of use:

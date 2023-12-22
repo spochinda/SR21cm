@@ -46,7 +46,7 @@ def standardize(data, data_stats, keep_ionized = False):
 
 def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     fig = plt.figure(tight_layout=True, figsize=(20,10))
-    gs = gridspec.GridSpec(len(IC_seeds)+1, 6, figure=fig)
+    gs = gridspec.GridSpec(len(IC_seeds)+1, 7, figure=fig)
     ax_loss = fig.add_subplot(gs[0,:])
 
     #loss row
@@ -75,6 +75,11 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
         
 
     for i,IC in enumerate(IC_seeds):
+        #calculate power spectra
+        k_vals_gen, Pk_gen = calculate_power_spectrum(data_x=generated_boxes[i,:,:,:,0], Lpix=3, kbins=100)
+        k_vals_real, Pk_real = calculate_power_spectrum(data_x=T21_standardized[i,:,:,:,0], Lpix=3, kbins=100)
+        k_vals_real_lr, Pk_real_lr = calculate_power_spectrum(data_x=T21_lr_standardized[i,:,:,:,0], Lpix=6, kbins=100)
+
         # Plot histograms
         ax_hist = fig.add_subplot(gs[i+1,0])
         ax_hist.hist(generated_boxes[i, :, :, :, 0].flatten(), bins=100, alpha=0.5, label="generated", density=True)
@@ -82,39 +87,51 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
         ax_hist.set_xlabel("Standardized T21")
         ax_hist.set_title("Histograms of standardized data")
         ax_hist.legend()
+        
+        # Plot power spectra
+        ax_dsq = fig.add_subplot(gs[i+1,1])
+        ax_dsq.plot(k_vals_gen, Pk_gen*k_vals_gen**3/(2*np.pi**2), label="Generated")
+        ax_dsq.plot(k_vals_real, Pk_real*k_vals_real**3/(2*np.pi**2), label="Real")
+        ax_dsq.plot(k_vals_real_lr, Pk_real_lr*k_vals_real_lr**3/(2*np.pi**2), label="Real lr")
+        ax_dsq.set_xlabel("$k$")
+        ax_dsq.set_ylabel("Standardized $\Delta^2_{21}$")
+        ax_dsq.set_yscale("log")
+        ax_dsq.set_title("Standardized power spectrum")
+        ax_dsq.legend()
 
         # Plot real and generated data
         T21_std = np.std(T21_standardized[i, :, :, :, 0].numpy().flatten())
         T21_mean = np.mean(T21_standardized[i, :, :, :, 0].numpy().flatten())
-        ax_gen = fig.add_subplot(gs[i+1,1])
+        ax_gen = fig.add_subplot(gs[i+1,2])
         ax_gen.imshow(generated_boxes[i, :, :, generated_boxes.shape[-2]//2, 0], vmin=T21_mean-sigmas*T21_std, vmax=T21_mean+sigmas*T21_std)
         ax_gen.set_title("Generated")
-        ax_real = fig.add_subplot(gs[i+1,2])
+        ax_real = fig.add_subplot(gs[i+1,3])
         ax_real.imshow(T21_standardized[i, :, :, T21_standardized.shape[-2]//2, 0], vmin=T21_mean-sigmas*T21_std, vmax=T21_mean+sigmas*T21_std)
         ax_real.set_title("Real")
-        ax_real_lr = fig.add_subplot(gs[i+1,3])
+        ax_real_lr = fig.add_subplot(gs[i+1,4])
         ax_real_lr.imshow(T21_lr_standardized[i, :, :, T21_lr_standardized.shape[-2]//2, 0], vmin=T21_mean-sigmas*T21_std, vmax=T21_mean+sigmas*T21_std)
         ax_real_lr.set_title("Real lr")
+        
 
         if plot_slice:
-            ax_delta = fig.add_subplot(gs[i+1,4])
+            ax_delta = fig.add_subplot(gs[i+1,5])
             delta_std = np.std(delta_standardized[i, :, :, :, 0].numpy().flatten())
             delta_mean = np.mean(delta_standardized[i, :, :, :, 0].numpy().flatten())
             ax_delta.imshow(delta_standardized[i, :, :, delta_standardized.shape[-2]//2, 0], vmin=delta_mean-sigmas*delta_std, vmax=delta_mean+sigmas*delta_std)
             ax_delta.set_title("Standardized Delta IC ID={0}".format(IC))
             if vbv_standardized is not None:
-                ax_vbv = fig.add_subplot(gs[i+1,5])
+                ax_vbv = fig.add_subplot(gs[i+1,6])
                 vbv_std = np.std(vbv_standardized[i, :, :, :, 0].numpy().flatten())
                 vbv_mean = np.mean(vbv_standardized[i, :, :, :, 0].numpy().flatten())
                 ax_vbv.imshow(vbv_standardized[i, :, :, vbv_standardized.shape[-2]//2, 0], vmin=vbv_mean-sigmas*vbv_std, vmax=vbv_mean+sigmas*vbv_std)
                 ax_vbv.set_title("Standardized Vbv IC ID={0}".format(IC))
         else: #histogram delta and vbv_standardised
-            ax_delta = fig.add_subplot(gs[i+1,4])
+            ax_delta = fig.add_subplot(gs[i+1,5])
             ax_delta.hist(delta_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="delta", density=True)
             ax_delta.set_title("Standardized delta IC ID={0}".format(IC))
             ax_delta.legend()
             if vbv_standardized is not None:
-                ax_vbv = fig.add_subplot(gs[i+1,5])
+                ax_vbv = fig.add_subplot(gs[i+1,6])
                 ax_vbv.hist(vbv_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="vbv", density=True)
                 ax_vbv.set_title("Standardized vbv IC ID={0}".format(IC))
                 ax_vbv.legend()
@@ -176,23 +193,24 @@ epochs = 10000
 beta_1 = 0.5
 beta_2 = 0.999
 #calculate decay steps from T21  and epochs. I want the learning rate to decay to 1e-5 after 200 epochs
-learning_rate = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=1e-2,#3e-3,
-    decay_steps=300,#100,
-    decay_rate=0.9)
-learning_rate_g = tf.keras.optimizers.schedules.ExponentialDecay(
-    initial_learning_rate=1e-2,#3e-3,
-    decay_steps=30,#10,
-    decay_rate=0.9)
-#learning_rate= np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
-lbda= np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
+#learning_rate = 3e-2 #tf.keras.optimizers.schedules.ExponentialDecay(
+    #initial_learning_rate=3e-3,#3e-3,
+    #decay_steps=100,#100,
+    #decay_rate=0.9)
+#learning_rate_g = 3e-2#tf.keras.optimizers.schedules.ExponentialDecay(
+    #initial_learning_rate=9e-3,#3e-3,
+    #decay_steps=10,#10,
+    #decay_rate=0.9)
+learning_rate = [3e-3, 1e-3, 3e-4] #np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
+learning_rate_g = learning_rate
+lbda = [10.,] #np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
 
 
 
-#combinations = list(itertools.product(lbda, learning_rate))
-#lbda,learning_rate = combinations[index]
+combinations = list(itertools.product(lbda, learning_rate))
+lbda,learning_rate = combinations[index]
 
-print("Params: ", lbda, learning_rate, flush=True)
+print("Params: ", lbda, learning_rate, len(combinations),flush=True)
 
 inception_kwargs = {
             #'input_channels': self.T21_shape[-1],
@@ -203,7 +221,7 @@ inception_kwargs = {
             #'filters_1x1x1_3x3x3': 4,
             #'filters_3x3x3': 4,
             #'filters_1x1x1': 4,
-            'kernel_initializer': 'glorot_uniform',#tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None), #
+            'kernel_initializer': 'glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None), #
             'bias_initializer': 'zeros',#tf.keras.initializers.Constant(value=0.1), #
             
             'strides': (1,1,1), 
@@ -211,8 +229,12 @@ inception_kwargs = {
             'padding': 'valid',
             }
 
-generator = Generator(network_model='original', inception_kwargs=inception_kwargs, vbv_shape=None)
-critic = Critic(lbda=lbda, vbv_shape=None, network_model='original')
+generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
+                      bias_initializer='zeros', 
+                      network_model='original', inception_kwargs=inception_kwargs, vbv_shape=None)
+critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
+                bias_initializer='zeros',
+                lbda=lbda, vbv_shape=None, network_model='original')
 
 if False:
     import tensorflow_addons as tfa
@@ -227,13 +249,13 @@ if False:
     optimizers_and_layers = [(optimizers[0], generator.model.layers[:-1]), (optimizers[1], generator.model.layers[-1])]
     generator_optimizer = tfa.optimizers.MultiOptimizer(optimizers_and_layers)
 
-generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate_g, beta_1=beta_1, beta_2=beta_2)
+generator_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2) #learning_rate_g
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=beta_1, beta_2=beta_2)
 
 
 #model.summary()
-tf.keras.utils.plot_model(generator.model, 
-                          to_file=path+'/plots/generator_model_original.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+#tf.keras.utils.plot_model(generator.model, 
+#                          to_file=path+'/plots/generator_model_original.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 #tf.keras.utils.plot_model(critic.model,
 #                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 
@@ -244,16 +266,14 @@ Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
 dataset = Data.data(augment=True, augments=9, low_res=True)
 dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
-batches = dataset.batch(4)
-
-print("Number of batches: ", len(list(batches)), flush=True)
 
 
 
 
 
 
-model_path = path+"/trained_models/model_{0}".format(47)#index+20)#22
+
+model_path = path+"/trained_models/model_{0}".format(index+84)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -291,10 +311,12 @@ lr_generator = []
 lr_critic = []
 for e in range(epochs):
     start = time.time()
-
+    
     generator_losses = []
     critic_losses = []
     gradient_penalty = []
+    batches = dataset.shuffle(buffer_size=len(dataset)).batch(4)
+    #print("Clipping layer: ", generator.model.layers[-1].trainable_variables[0].numpy()/generator.model.layers[-1].sensitivity)
     for i, (T21, delta, vbv, T21_lr) in enumerate(batches):
         #print("shape inputs: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
         start_start = time.time()
@@ -339,7 +361,7 @@ for e in range(epochs):
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
     if e%1 == 0:
         plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
-        plot_lr()
+        #plot_lr()
     #if e%1 == 0:
         #plot_anim(generator=generator, T21_big=T21_standardized, 
                   #T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
@@ -349,6 +371,10 @@ for e in range(epochs):
                   #T21_lr=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None, 
                   #epoch=e, layer_name='conv3d_72', sigmas=3)
 
+    #try:
+    #    print("Clipping layer: ", generator.model.layers[-1].trainable_variables[0].numpy()/generator.model.layers[-1].sensitivity)
+    #except Exception as e:
+    #    print("Failed printing clipping layer: ", e)
     print("Time for epoch {0} is {1:.2f} sec \nGenerator mean loss: {2:.2f}, \nCritic mean loss: {3:.2f}, \nGradient mean penalty: {4:.2f}".format(e + 1, time.time() - start, np.mean(generator_losses), np.mean(critic_losses), np.mean(gradient_penalty)), flush=True)
     #break
 
@@ -361,8 +387,8 @@ with open(model_path+"/losses.pkl", "rb") as f:
 #print last 10 losses and total number of epochs
 print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
 
-"""
 
+"""
 #animation
 
 if False:
