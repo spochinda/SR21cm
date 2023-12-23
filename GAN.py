@@ -231,7 +231,7 @@ inception_kwargs = {
 
 generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                       bias_initializer='zeros', 
-                      network_model='original', inception_kwargs=inception_kwargs, vbv_shape=None)
+                      network_model='skip_patches', inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                 bias_initializer='zeros',
                 lbda=lbda, vbv_shape=None, network_model='original')
@@ -254,8 +254,8 @@ critic_optimizer = tf.keras.optimizers.Adam(learning_rate=learning_rate, beta_1=
 
 
 #model.summary()
-#tf.keras.utils.plot_model(generator.model, 
-#                          to_file=path+'/plots/generator_model_original.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
+tf.keras.utils.plot_model(generator.model, 
+                          to_file=path+'/plots/generator_model_skip_patches.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 #tf.keras.utils.plot_model(critic.model,
 #                          to_file=path+'/plots/critic_model_2.png', show_shapes=True, show_layer_names=True, show_layer_activations=True)
 
@@ -387,8 +387,8 @@ with open(model_path+"/losses.pkl", "rb") as f:
 #print last 10 losses and total number of epochs
 print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
 
-
 """
+
 #animation
 
 if False:

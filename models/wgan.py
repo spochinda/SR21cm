@@ -239,7 +239,7 @@ class Generator(tf.keras.Model):
     def __init__(self, T21_shape=(1,64,64,64,1), delta_shape=(1,128,128,128,1), vbv_shape=(1,128,128,128,1),
                  kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                  bias_initializer=tf.keras.initializers.Constant(value=0.1),
-                 network_model='modified',
+                 network_model='original',
                  residual_block_kwargs= {'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]},
                  inception_kwargs={}):
         super(Generator, self).__init__()
@@ -293,7 +293,7 @@ class Generator(tf.keras.Model):
 
             data = tf.keras.layers.Concatenate(axis=4)([#T21_ion, 
                                                         data_, data_pos, data_neg])    
-        else:
+        elif self.network_model =='original':
             T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
             T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21)
 
@@ -310,25 +310,46 @@ class Generator(tf.keras.Model):
 
             data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
             data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
-            #data = tf.keras.layers.ELU()(data) #array1
-            
         
+        elif self.network_model =='skip_patches':
+            T21_ion = tf.keras.layers.Lambda(lambda x: tf.where(x > tf.reduce_min(x, axis=[1,2,3],keepdims=True), 0., x))(T21)
+            T21_ion = InceptionLayer(filters=6, **self.inception_kwargs)(T21_ion)
+            T21_ion = tf.keras.layers.Cropping3D(cropping=(3, 3, 3))(T21_ion)
+            
+            T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
+            T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21)
+
+            delta = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_delta)
+            delta = tf.keras.layers.LeakyReLU(alpha=0.1)(delta)
+
+            if self.vbv_shape != None:
+                vbv = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_vbv)
+                vbv = tf.keras.layers.LeakyReLU(alpha=0.1)(vbv)
+
+                data = tf.keras.layers.Concatenate(axis=4)([T21, delta, vbv])
+            else:
+                data = tf.keras.layers.Concatenate(axis=4)([T21, delta])
+
+            data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
+            data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
+            data = tf.keras.layers.Conv3D(filters=1,
+                            kernel_size=(1, 1, 1),
+                            kernel_initializer=self.kernel_initializer,
+                            bias_initializer=self.bias_initializer,
+                            strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                            activation=None)(data)
+
+            data = tf.tile(data, [1,1,1,1,T21_ion.shape[-1]])
+            data = tf.keras.layers.Add()([data, T21_ion])
+            
         data = tf.keras.layers.Conv3D(filters=1,
                             kernel_size=(1, 1, 1),
                             kernel_initializer=self.kernel_initializer,
                             bias_initializer=self.bias_initializer,
                             strides=(1, 1, 1), padding='valid', data_format="channels_last",
                             activation=None)(data)
-        
         #data = ClippingLayer(a = -4.5, sensitivity=1e-1, min_value = -5., max_value = -4.,trainable = True)(data) #array3
-
-        #data = tf.keras.layers.ReLU()(data) #array2
-        #data = tf.keras.layers.Conv3D(filters=1,
-        #                    kernel_size=(1, 1, 1),
-        #                    kernel_initializer=self.kernel_initializer,
-        #                    bias_initializer=self.bias_initializer,
-        #                    strides=(1, 1, 1), padding='valid', data_format="channels_last",
-        #                    activation=None)(data) #array2
+    
         
         if self.vbv_shape != None:
             self.model = tf.keras.Model(inputs=[inputs_T21, inputs_delta, inputs_vbv], outputs=data)
