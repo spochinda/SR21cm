@@ -108,7 +108,7 @@ class Critic(tf.keras.Model):
                                                 )(-input_neg)
             
             output = tf.keras.layers.Concatenate(axis=4)([input_, input_pos, input_neg])
-        else:
+        elif self.network_model == 'original':
             output = tf.keras.layers.Conv3D(filters=8, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
                                                 kernel_initializer=self.kernel_initializer, #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                                 bias_initializer=self.bias_initializer, #tf.keras.initializers.Constant(value=0.1),
@@ -313,7 +313,15 @@ class Generator(tf.keras.Model):
         
         elif self.network_model =='skip_patches':
             T21_ion = tf.keras.layers.Lambda(lambda x: tf.where(x > tf.reduce_min(x, axis=[1,2,3],keepdims=True), 0., x))(T21)
-            T21_ion = InceptionLayer(filters=6, **self.inception_kwargs)(T21_ion)
+            T21_ion = InceptionLayer(filters=6,kernel_initializer = 'glorot_uniform', #tf.keras.initializers.RandomNormal(mean=.02, stddev=0.005, seed=None),
+                                     use_bias=False, strides= 1,data_format = 'channels_last', padding='valid',)(T21_ion) #**self.inception_kwargs)(T21_ion)
+            #T21_ion = tf.keras.layers.ReLU()(T21_ion)###
+            T21_ion= tf.keras.layers.Conv3D(filters=1,
+                            kernel_size=(1, 1, 1),
+                            kernel_initializer=self.kernel_initializer,
+                            use_bias=False,#bias_initializer=self.bias_initializer,
+                            strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                            activation=None)(T21_ion)
             T21_ion = tf.keras.layers.Cropping3D(cropping=(3, 3, 3))(T21_ion)
             
             T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
@@ -339,7 +347,7 @@ class Generator(tf.keras.Model):
                             strides=(1, 1, 1), padding='valid', data_format="channels_last",
                             activation=None)(data)
 
-            data = tf.tile(data, [1,1,1,1,T21_ion.shape[-1]])
+            #data = tf.tile(data, [1,1,1,1,T21_ion.shape[-1]])
             data = tf.keras.layers.Add()([data, T21_ion])
             
         data = tf.keras.layers.Conv3D(filters=1,

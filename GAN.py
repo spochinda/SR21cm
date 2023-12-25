@@ -273,7 +273,7 @@ dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(index+84)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(index+89)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
