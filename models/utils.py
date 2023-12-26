@@ -228,6 +228,41 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100):
         
     return k_vals, P_k
 
+def ionized_fraction(data):
+    Vcube = tf.cast(data.shape[1]*data.shape[2]*data.shape[3],dtype=tf.float32)
+    ionized_fraction = tf.reduce_sum(tf.cast(data==0, tf.float32),axis=[1,2,3],keepdims=True)/Vcube
+    return ionized_fraction
+
+def standardize(data, data_stats, subtract_mean = True):
+    #subtract mean if non-zero minimum and divide by std, otherwise only divide by std
+    mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
+    mean = mean.numpy()#.flatten()
+    var = var.numpy()#.flatten()  
+    
+    min_val = tf.reduce_min(data_stats,axis=[1,2,3],keepdims=True).numpy()#.flatten()  
+    
+    ionized_frac = ionized_fraction(data_stats)
+    #tf.reduce_sum(tf.cast(data_stats==0, tf.float32),axis=[1,2,3],keepdims=True)/Vcube
+    #if ionized_fraction >= 0.997:
+    for i,(m,v,m_,ion_frac) in enumerate(zip(mean,var,min_val,ionized_frac)):
+        if ion_frac >= 0.997:
+            #mean[i] = 0
+            var[i] = 1
+        else:
+            if not subtract_mean:
+                mean[i] = 0
+
+    #    if (m==0) and (v==0) and (m_==0):
+    #        mean[i] = 0
+    #        var[i] = 1
+    #    elif (m!=0) and (v!=0) and (m_==0) and (subtract_mean):
+    #        mean[i] = 0
+    std = var**0.5
+
+    return (data - mean) / std
+
+
+
 """
 #Examples of use:
 Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))

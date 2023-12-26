@@ -28,21 +28,6 @@ path = os.getcwd()
 print("Available devices: ", tf.config.list_physical_devices(), flush=True)
 
 
-def standardize(data, data_stats, keep_ionized = False):
-    #subtract mean if non-zero minimum and divide by std, otherwise only divide by std
-    mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
-    mean = mean.numpy()#.flatten()
-    min_val = tf.reduce_min(data_stats,axis=[1,2,3],keepdims=True).numpy()#.flatten()
-    var = var.numpy()#.flatten()    
-    for i,(m,v,m_) in enumerate(zip(mean,var,min_val)):
-        if (m==0) and (v==0) and (m_==0):
-            mean[i] = 0
-            var[i] = 1
-        elif (m!=0) and (v!=0) and (m_==0) and (keep_ionized):
-            mean[i] = 0
-    std = var**0.5
-
-    return (data - mean) / std
 
 def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     fig = plt.figure(tight_layout=True, figsize=(20,10))
@@ -231,11 +216,11 @@ inception_kwargs = {
 
 generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                       bias_initializer='zeros', 
-                      network_model='skip_patches', inception_kwargs=inception_kwargs, vbv_shape=None)
+                      network_model='original_variable_output_activation', inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                 bias_initializer='zeros',
                 lbda=lbda, vbv_shape=None, network_model='original')
-
+"""
 if False:
     import tensorflow_addons as tfa
     optimizers = [
@@ -320,9 +305,9 @@ for e in range(epochs):
     for i, (T21, delta, vbv, T21_lr) in enumerate(batches):
         #print("shape inputs: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
         start_start = time.time()
-        T21_standardized = standardize(T21, T21_lr, keep_ionized=False)
-        T21_lr_standardized = standardize(T21_lr, T21_lr, keep_ionized=False)
-        delta_standardized = standardize(delta, delta, keep_ionized=False)
+        T21_standardized = standardize(T21, T21_lr, subtract_mean=False)
+        T21_lr_standardized = standardize(T21_lr, T21_lr, subtract_mean=False)
+        delta_standardized = standardize(delta, delta, subtract_mean=False)
         vbv_standardized = None #standardize(vbv, vbv)
         
         try:
@@ -389,9 +374,15 @@ print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".f
 
 """
 
+
+
+"""
 #animation
 
-if False:
+if True:
+    z = list(np.arange(6,29,1)[::1])
+    Data_hist = DataManager(path, redshifts=z, IC_seeds=[1005,1006,1007,1008,1009,1010])
+    T21, delta, vbv, T21_lr = Data_hist.data(augment=False, augments=9, low_res=True) 
 
     #fig,ax = plt.subplots(1,2,figsize=(10,5))
     shapes = (2,3)
@@ -401,30 +392,31 @@ if False:
         ind = np.unravel_index(i, shapes)
         #ax[ind].imshow(T21_target[i,:,:,10,-1])
         data_standardized = standardize(T21_lr[i:i+1,:,:,:,-1], T21_lr[i:i+1,:,:,:,-1], i)
-        ax[ind].hist(data_standardized[:,:,:,10].numpy().flatten(), bins=100)
+        #ax[ind].hist(data_standardized[:,:,:,-1].numpy().flatten(), bins=100)
     
     def update(i):
-        print("z: ", z[i], i)
         for j in range(T21_lr.shape[0]):
             ind = np.unravel_index(j, shapes)
             #ax[ind].imshow(T21_target[j,:,:,10,-i-1])
             #ax[ind].imshow(test[j,:,:,10,-i-1])
-            data_standardized = standardize(T21_lr[j:j+1,:,:,:,-i-1], T21_lr[j:j+1,:,:,:,-i-1],j)
+            data_standardized = standardize(data=T21_lr[j:j+1,:,:,:,i], data_stats=T21_lr[j:j+1,:,:,:,i],subtract_mean=False)
+            ax[ind].hist(data_standardized.numpy().flatten(), bins=100, density=True)
+            #try:
+            #    ax[ind].hist(data_standardized[:,:,:,10].numpy().flatten(), bins=100)
+            #except Exception as e:
+            #    print("couldn't plot j={0}, i={1}, error: ".format(j,i), e)
             
-            try:
-                ax[ind].hist(data_standardized[:,:,:,10].numpy().flatten(), bins=100)
-            except Exception as e:
-                print("couldn't plot j={0}, i={1}, error: ".format(j,i), e)
             #ax[ind].set_title('z = '+str(z[-i-1]))
             #ax[1].imshow(T21_train[3,:,:,10,-i-1])
             #ax.set_axis_off()
-            ax[ind].set_xlim(-5,5)
+            ax[ind].set_xlim(-7,7)
+            ax[ind].set_ylim(0,1)
             ax[ind].set_title('z = '+str(z[i]))
         #ax[0].imshow(T21_target[3,:,:,10,-i-1])
         #ax[1].imshow(T21_train[3,:,:,10,-i-1])
         #ax.set_axis_off()
 
-    anim = FuncAnimation(fig, update, frames=z.size, interval=800)
+    anim = FuncAnimation(fig, update, frames=len(z), interval=800)
 
     #fig,axes = plt.subplots(1,3,figsize=(15,5))
     #slice_id = 10
@@ -441,7 +433,7 @@ if False:
 
     #anim = FuncAnimation(fig, update, frames=len(z), interval=800)
     ##plt.show()
-    anim.save(path+"/hist_3.gif", dpi=300, writer=PillowWriter(fps=1))
+    anim.save(path+"/plots/hist_3_1.gif", dpi=300, writer=PillowWriter(fps=2))
 
 #data_standardized = standardize(T21_lr[j:j+1,:,:,:,-i-1], T21_lr[j:j+1,:,:,:,-i-1])
 #check T21_lr if all zeros
@@ -455,4 +447,7 @@ if False:
 
 #plt.title("z={0}, Mean: {1:.2f}, Std: {2:.2f}".format(z[22], mean[0], var[0]**0.5))
 #plt.show()
+
+
+
 """

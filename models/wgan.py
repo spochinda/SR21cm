@@ -1,4 +1,5 @@
 import tensorflow as tf
+from models.utils import *
 
 class Critic(tf.keras.Model):
     def __init__(self,
@@ -293,6 +294,12 @@ class Generator(tf.keras.Model):
 
             data = tf.keras.layers.Concatenate(axis=4)([#T21_ion, 
                                                         data_, data_pos, data_neg])    
+            data = tf.keras.layers.Conv3D(filters=1,
+                                          kernel_size=(1, 1, 1),
+                                          kernel_initializer=self.kernel_initializer,
+                                          bias_initializer=self.bias_initializer,
+                                          strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                          activation=None)(data)
         elif self.network_model =='original':
             T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
             T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21)
@@ -310,6 +317,38 @@ class Generator(tf.keras.Model):
 
             data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
             data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
+            data = tf.keras.layers.Conv3D(filters=1,
+                                          kernel_size=(1, 1, 1),
+                                          kernel_initializer=self.kernel_initializer,
+                                          bias_initializer=self.bias_initializer,
+                                          strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                          activation=None)(data)
+        elif self.network_model =='original_variable_output_activation':
+            T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
+            T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21)
+
+            delta = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_delta)
+            delta = tf.keras.layers.LeakyReLU(alpha=0.1)(delta)
+
+            if self.vbv_shape != None:
+                vbv = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_vbv)
+                vbv = tf.keras.layers.LeakyReLU(alpha=0.1)(vbv)
+
+                data = tf.keras.layers.Concatenate(axis=4)([T21, delta, vbv])
+            else:
+                data = tf.keras.layers.Concatenate(axis=4)([T21, delta])
+
+            data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
+            data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
+            data = tf.keras.layers.Conv3D(filters=1,
+                                          kernel_size=(1, 1, 1),
+                                          kernel_initializer=self.kernel_initializer,
+                                          bias_initializer=self.bias_initializer,
+                                          strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                          activation=None)(data)
+            ionized_frac = ionized_fraction(inputs_T21)
+            mask = ionized_frac >= 0.0005 #0.003
+            data = tf.where(mask, tf.keras.layers.ReLU()(data), data)
         
         elif self.network_model =='skip_patches':
             T21_ion = tf.keras.layers.Lambda(lambda x: tf.where(x > tf.reduce_min(x, axis=[1,2,3],keepdims=True), 0., x))(T21)
@@ -349,13 +388,14 @@ class Generator(tf.keras.Model):
 
             #data = tf.tile(data, [1,1,1,1,T21_ion.shape[-1]])
             data = tf.keras.layers.Add()([data, T21_ion])
+            data = tf.keras.layers.Conv3D(filters=1,
+                                          kernel_size=(1, 1, 1),
+                                          kernel_initializer=self.kernel_initializer,
+                                          bias_initializer=self.bias_initializer,
+                                          strides=(1, 1, 1), padding='valid', data_format="channels_last",
+                                          activation=None)(data)
             
-        data = tf.keras.layers.Conv3D(filters=1,
-                            kernel_size=(1, 1, 1),
-                            kernel_initializer=self.kernel_initializer,
-                            bias_initializer=self.bias_initializer,
-                            strides=(1, 1, 1), padding='valid', data_format="channels_last",
-                            activation=None)(data)
+        
         #data = ClippingLayer(a = -4.5, sensitivity=1e-1, min_value = -5., max_value = -4.,trainable = True)(data) #array3
     
         
@@ -496,9 +536,6 @@ inception_kwargs = {
             'padding': 'valid',
             #'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]
             }
-#Incep = InceptionLayer(filters=4, activation=tf.keras.layers.Activation('tanh'), **inception_kwargs)
-
-#print(dir(Incep))   
 
 class ResidualBlock(tf.keras.layers.Layer):
     def __init__(self, layer, filters=4,
