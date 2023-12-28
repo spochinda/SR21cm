@@ -29,7 +29,7 @@ print("Available devices: ", tf.config.list_physical_devices(), flush=True)
 
 
 
-def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
+def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True, subtract_mean=False):
     fig = plt.figure(tight_layout=True, figsize=(20,10))
     gs = gridspec.GridSpec(len(IC_seeds)+1, 7, figure=fig)
     ax_loss = fig.add_subplot(gs[0,:])
@@ -37,11 +37,12 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     #loss row
     ax_loss.plot(range(len(generator_losses_epoch)), generator_losses_epoch, label="generator")
     ax_loss.plot(range(len(critic_losses_epoch)), critic_losses_epoch, label="critic")
+    ax_loss.plot(range(len(critic_losses_epoch)), np.array(critic_losses_epoch)-np.array(gradient_penalty_epoch), label="$W_{{gen}}-W_{{real}}$")
     ax_loss.plot(range(len(gradient_penalty_epoch)), gradient_penalty_epoch, label="gradient penalty")
     ax_loss.set_title("lambda={0}, learning rate={1}".format(lbda, learning_rate))
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Loss")
-    ax_loss.set_yscale("symlog")
+    #ax_loss.set_yscale("symlog")
     ax_loss.grid()
     
     ax_loss.legend()
@@ -49,9 +50,9 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
     # Validation data
     Data_validation = DataManager(path, redshifts=[redshift,], IC_seeds=IC_seeds)
     T21, delta, vbv, T21_lr = Data_validation.data(augment=False, augments=9, low_res=True) 
-    T21_standardized = standardize(T21, T21_lr)
-    T21_lr_standardized = standardize(T21_lr, T21_lr)
-    delta_standardized = standardize(delta, delta)
+    T21_standardized = standardize(T21, T21_lr, subtract_mean=subtract_mean)
+    T21_lr_standardized = standardize(T21_lr, T21_lr, subtract_mean=subtract_mean)
+    delta_standardized = standardize(delta, delta, subtract_mean=subtract_mean)
     vbv_standardized = None #standardize(vbv, vbv)
     if vbv_standardized is not None:
         generated_boxes = generator.forward(T21_lr_standardized, delta_standardized, vbv_standardized).numpy()
@@ -69,6 +70,7 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True):
         ax_hist = fig.add_subplot(gs[i+1,0])
         ax_hist.hist(generated_boxes[i, :, :, :, 0].flatten(), bins=100, alpha=0.5, label="generated", density=True)
         ax_hist.hist(T21_standardized[i, :, :, :, 0].numpy().flatten(), bins=100, alpha=0.5, label="real", density=True)
+        ax_hist.set_ylim(0,2)
         ax_hist.set_xlabel("Standardized T21")
         ax_hist.set_title("Histograms of standardized data")
         ax_hist.legend()
@@ -186,7 +188,7 @@ beta_2 = 0.999
     #initial_learning_rate=9e-3,#3e-3,
     #decay_steps=10,#10,
     #decay_rate=0.9)
-learning_rate = [3e-3, 1e-3, 3e-4] #np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
+learning_rate = np.logspace(-4,-2.5,4)[1:]#0.01#np.logspace(-4,1,11).tolist()#[1e-2, 1e-3, 3e-4]#[3e-3, 1e-3, 3e-4] #np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
 learning_rate_g = learning_rate
 lbda = [10.,] #np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
 
@@ -219,8 +221,8 @@ generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializer
                       network_model='original_variable_output_activation', inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                 bias_initializer='zeros',
-                lbda=lbda, vbv_shape=None, network_model='original')
-"""
+                lbda=lbda, vbv_shape=None, network_model='original_layer_norm')
+
 if False:
     import tensorflow_addons as tfa
     optimizers = [
@@ -258,10 +260,11 @@ dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(index+89)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(index+111)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
+    os.mkdir(model_path+"/logs")
 ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.model, 
                            generator_optimizer=generator_optimizer, critic_optimizer=critic_optimizer,
                            )
@@ -307,8 +310,8 @@ for e in range(epochs):
         start_start = time.time()
         T21_standardized = standardize(T21, T21_lr, subtract_mean=False)
         T21_lr_standardized = standardize(T21_lr, T21_lr, subtract_mean=False)
-        delta_standardized = standardize(delta, delta, subtract_mean=False)
-        vbv_standardized = None #standardize(vbv, vbv)
+        delta_standardized = delta #standardize(delta, delta, subtract_mean=False)
+        vbv_standardized = None #vbv #standardize(vbv, vbv)
         
         try:
             crit_loss, gp = critic.train_step_critic(generator=generator, optimizer=critic_optimizer, T21_big=T21_standardized, 
@@ -345,7 +348,7 @@ for e in range(epochs):
     #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
     if e%1 == 0:
-        plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, plot_slice=True)
+        plot_and_save(IC_seeds=[1008,1009,1010], redshift=10, sigmas=3, subtract_mean=False)
         #plot_lr()
     #if e%1 == 0:
         #plot_anim(generator=generator, T21_big=T21_standardized, 
@@ -371,7 +374,7 @@ with open(model_path+"/losses.pkl", "rb") as f:
     generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch = pickle.load(f)
 #print last 10 losses and total number of epochs
 print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
-
+"""
 """
 
 

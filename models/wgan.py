@@ -1,5 +1,6 @@
 import tensorflow as tf
 from models.utils import *
+#from utils import *
 
 class Critic(tf.keras.Model):
     def __init__(self,
@@ -137,6 +138,44 @@ class Critic(tf.keras.Model):
                                                 strides=(1, 1, 1), padding='valid', data_format="channels_last", 
                                                 activation=tf.keras.layers.LeakyReLU(alpha=0.1)#tf.keras.layers.LeakyReLU(alpha=0.1)
                                                 )(output)
+            
+        elif self.network_model == 'original_layer_norm':
+            layernorm = True
+            output = tf.keras.layers.Conv3D(filters=8, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
+                                                kernel_initializer=self.kernel_initializer, #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                                bias_initializer=self.bias_initializer, #tf.keras.initializers.Constant(value=0.1),
+                                                strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                                                activation=None#tf.keras.layers.LeakyReLU(alpha=0.1)
+                                                )(input)
+            output = tf.keras.layers.LayerNormalization()(output) if layernorm else output
+            output = tf.keras.layers.LeakyReLU(alpha=0.1)(output)
+
+            output = tf.keras.layers.Conv3D(filters=16, kernel_size=(self.kernel_sizes[1], self.kernel_sizes[1], self.kernel_sizes[1]), 
+                                                kernel_initializer=self.kernel_initializer, #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                                bias_initializer=self.bias_initializer, #tf.keras.initializers.Constant(value=0.1),
+                                                strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+                                                activation=None
+                                                )(output)
+            output = tf.keras.layers.LayerNormalization()(output) if layernorm else output
+            output = tf.keras.layers.LeakyReLU(alpha=0.1)(output)
+            
+            output = tf.keras.layers.Conv3D(filters=32, kernel_size=(self.kernel_sizes[2], self.kernel_sizes[2], self.kernel_sizes[2]), 
+                                                kernel_initializer=self.kernel_initializer, #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                                bias_initializer=self.bias_initializer, #tf.keras.initializers.Constant(value=0.1),
+                                                strides=(2, 2, 2), padding='valid', data_format="channels_last", 
+                                                activation=None
+                                                )(output)
+            output = tf.keras.layers.LayerNormalization()(output) if layernorm else output
+            output = tf.keras.layers.LeakyReLU(alpha=0.1)(output)
+            
+            output = tf.keras.layers.Conv3D(filters=64, kernel_size=(self.kernel_sizes[3], self.kernel_sizes[3], self.kernel_sizes[3]), 
+                                                kernel_initializer=self.kernel_initializer, #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
+                                                bias_initializer=self.bias_initializer, #tf.keras.initializers.Constant(value=0.1),
+                                                strides=(1, 1, 1), padding='valid', data_format="channels_last", 
+                                                activation=None
+                                                )(output)
+            output = tf.keras.layers.LayerNormalization()(output) if layernorm else output
+            output = tf.keras.layers.LeakyReLU(alpha=0.1)(output)
         
         output = tf.keras.layers.Flatten()(output)
         #flatten = tf.keras.layers.Flatten()
@@ -148,57 +187,39 @@ class Critic(tf.keras.Model):
         #self.model = tf.keras.Sequential([conv1, conv2, conv3, conv4, flatten, out])    
         self.model = tf.keras.Model(inputs=[input], outputs=output)
         return self.model
+    
+    
 
-    @tf.function
-    def critic_loss(self, generated_boxes, T21_big, IC_delta, IC_vbv=None):
+    #@tf.function
+    def critic_loss(self, generator, T21_small, T21_big, IC_delta, IC_vbv=None):
         #wasserstein loss
         # Generate a batch of fake big boxes using the generator network
-        T21_big = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(T21_big)
-        IC_delta = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_delta)
-        if IC_vbv != None:
-            IC_vbv = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_vbv)
-        
-
-        # Evaluate the critic network on the real big boxes and the fake big boxes
-        W_real = self.forward(T21_big, IC_delta, IC_vbv)
-        W_gen = self.forward(generated_boxes, IC_delta, IC_vbv)
 
         epsilon = tf.random.uniform(shape=[T21_big.shape[0], 1, 1, 1, 1], minval=0., maxval=1., seed=None)
-        # Compute the interpolated difference between the real and generated samples
-        xhat = epsilon * T21_big + (1 - epsilon) * generated_boxes
-
         # Compute the gradients of the critic network with respect to the interpolated difference
-        with tf.GradientTape() as tape:    
-            tape.watch(xhat)
+        with tf.GradientTape() as tape:
+            # Evaluate the critic network on the real big boxes and the fake big boxes
+            generated_boxes = generator.forward(T21_small, IC_delta, IC_vbv)
+
+            # Crop to right size for critic
+            T21_big = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(T21_big)
+            IC_delta = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_delta)
+            if IC_vbv != None:
+                IC_vbv = tf.keras.layers.Cropping3D(cropping=(self.crop,self.crop,self.crop),data_format="channels_last")(IC_vbv)
+            
+            #interpolated gp difference
+            xhat = epsilon * T21_big + (1 - epsilon) * generated_boxes    
+
             critic_output = self.forward(xhat, IC_delta, IC_vbv)
         gradients = tape.gradient(critic_output, xhat)
         l2_norm = tf.math.reduce_euclidean_norm(gradients, axis=[1,2,3])
-        gp = self.lbda * tf.square(l2_norm - 1)
+        gp = tf.reduce_mean(self.lbda * tf.square(l2_norm - 1))
         
-        #plotting: need to remove tf.function decorator to plot histograms and imshows (e is epoch and i is batch number)
-        if False:
-            if (e==0) and (i<1):
-                fig,axes = plt.subplots(3,4,figsize=(15,5))
-                if True:
-                    for j in range(2):
-                        density = True
-                        axes[0,j].hist(T21_big[j,:,:,:,0].numpy().flatten(), density=density, bins=100, alpha=0.5, label="real")
-                        axes[1,j].hist(generated_boxes[j,:,:,:,0].numpy().flatten(), density=density, bins=100, alpha=0.5, label="fake")
-                        axes[2,j].hist(xhat[j,:,:,:,0].numpy().flatten(), density=density, bins=100, alpha=0.5, label="interpolated")
-                        
-                        axes[0,j+2].imshow(T21_big[j,:,:,10,0], vmin=-0.5, vmax=0.5)
-                        axes[1,j+2].imshow(generated_boxes[j,:,:,10,0], vmin=-0.5, vmax=0.5)
-                        axes[2,j+2].imshow(xhat[j,:,:,10,0], vmin=-0.5, vmax=0.5)
-                    
-                    for j in range(3):
-                        for k in range(2):
-                            axes[j,k].set_xlim(-5,5)
-                            axes[j,k].legend()
-                plt.show() 
+        W_real = tf.reduce_mean(self.forward(T21_big, IC_delta, IC_vbv))
+        W_gen = tf.reduce_mean(self.forward(generated_boxes, IC_delta, IC_vbv))
 
         # Compute the approximate Wasserstein loss
-        #print("W_real={0:.2f} shape={1}, \nW_gen={2:.2f} shape={3}, \ngp={4:.2f} shape={5}".format(tf.reduce_mean(W_real), W_real.shape, tf.reduce_mean(W_gen), W_gen.shape, tf.reduce_mean(gp), gp.shape))
-        loss = tf.reduce_mean(W_gen - W_real + gp)
+        loss = W_gen - W_real + gp
 
         return loss, gp 
 
@@ -206,15 +227,10 @@ class Critic(tf.keras.Model):
     def train_step_critic(self, generator, optimizer, T21_big, T21_small, IC_delta, IC_vbv):
         if (IC_vbv == None) and (self.vbv_shape != None): 
             assert False, "Critic was initialized with vbv_shape=None, but IC_vbv in train_step_critic is not None"
-        #
-        #Function that performs one training step for the critic network.
-        #The function calls the loss function for the critic network, computes the gradients,
-        #and applies the gradients to the network's parameters.
-        #
-
+        
+        #gradient of loss
         with tf.GradientTape() as disc_tape:
-            generated_boxes = generator.forward(T21_small, IC_delta, IC_vbv)
-            crit_loss, gp = self.critic_loss(generated_boxes, T21_big, IC_delta, IC_vbv)
+            crit_loss, gp = self.critic_loss(generator, T21_small, T21_big, IC_delta, IC_vbv)
 
         grad_disc = disc_tape.gradient(crit_loss, self.model.trainable_variables)
         optimizer.apply_gradients(zip(grad_disc, self.model.trainable_variables))
@@ -324,14 +340,18 @@ class Generator(tf.keras.Model):
                                           strides=(1, 1, 1), padding='valid', data_format="channels_last",
                                           activation=None)(data)
         elif self.network_model =='original_variable_output_activation':
+            layernorm = True
             T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
+            T21 = tf.keras.layers.LayerNormalization()(T21) if layernorm else T21
             T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21)
 
             delta = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_delta)
+            delta = tf.keras.layers.LayerNormalization()(delta) if layernorm else delta
             delta = tf.keras.layers.LeakyReLU(alpha=0.1)(delta)
 
             if self.vbv_shape != None:
                 vbv = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_vbv)
+                vbv = tf.keras.layers.LayerNormalization()(vbv) if layernorm else vbv
                 vbv = tf.keras.layers.LeakyReLU(alpha=0.1)(vbv)
 
                 data = tf.keras.layers.Concatenate(axis=4)([T21, delta, vbv])
@@ -339,6 +359,7 @@ class Generator(tf.keras.Model):
                 data = tf.keras.layers.Concatenate(axis=4)([T21, delta])
 
             data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
+            data = tf.keras.layers.LayerNormalization()(data) if layernorm else data
             data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
             data = tf.keras.layers.Conv3D(filters=1,
                                           kernel_size=(1, 1, 1),
@@ -347,7 +368,7 @@ class Generator(tf.keras.Model):
                                           strides=(1, 1, 1), padding='valid', data_format="channels_last",
                                           activation=None)(data)
             ionized_frac = ionized_fraction(inputs_T21)
-            mask = ionized_frac >= 0.0005 #0.003
+            mask = ionized_frac >= 0.#0.0005 #0.003
             data = tf.where(mask, tf.keras.layers.ReLU()(data), data)
         
         elif self.network_model =='skip_patches':
@@ -667,83 +688,23 @@ class ClippingLayer(tf.keras.layers.Layer):
         #print("Clipping values: ", self.a_factor/self.sensitivity, self.min_value, self.max_value, self.sensitivity,flush=True)
         res = tf.where(inputs > self.a_factor / self.sensitivity, inputs, self.a_factor / self.sensitivity)
         return res
-
+"""
 generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                       bias_initializer='zeros', 
-                      network_model='original', inception_kwargs=inception_kwargs, vbv_shape=None)
+                      network_model='original_variable_output_activation', inception_kwargs=inception_kwargs, vbv_shape=None)
+critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
+                bias_initializer='zeros',
+                lbda=10., vbv_shape=None, network_model='original_layer_norm')
+critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, beta_1=0.5, beta_2=0.999)
+generator_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, beta_1=0.5, beta_2=0.999)
+Data_validation = DataManager(path, redshifts=[10,], IC_seeds=[1008,1009,1010])
+T21, delta, vbv, T21_lr = Data_validation.data(augment=False, augments=9, low_res=True) 
+T21_standardized = standardize(T21, T21_lr, subtract_mean=False)
+T21_lr_standardized = standardize(T21_lr, T21_lr, subtract_mean=False)
+delta_standardized = standardize(delta, delta, subtract_mean=False)
 
-#print(dir(generator.model.layers[-1]))
-#print(generator.model.layers[-1].trainable_variables)
-#test generator and critic on noise
-
-
-#T21_lr = tf.random.normal(shape=(3,64,64,64,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
-#IC_delta = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
-#IC_vbv = tf.random.normal(shape=(3,128,128,128,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
-#generator = Generator(T21_shape=T21_lr.shape, delta_shape=IC_delta.shape, vbv_shape=None,#IC_vbv.shape, 
-#                      inception_kwargs=inception_kwargs)
-#generated_boxes = generator.forward(T21_lr, IC_delta, )
-
-#tf.keras.utils.plot_model(generator.model, 
-#                          to_file='generator_model_3.png', 
-#                          show_shapes=True, show_layer_names=True, 
-#                          show_layer_activations=True, expand_nested=False,
-#                          show_trainable=True)
-
-#T21_target = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)
-#IC_delta = tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None)   
-#IC_vbv = None #tf.random.normal(shape=(3,116,116,116,1), mean=0.0, stddev=1.0, seed=None, dtype=tf.dtypes.float32, name=None) 
-#critic = Critic(vbv_shape=None)
-#W_real = critic.forward(T21_target, IC_delta, IC_vbv)
-#W_gen = critic.forward(generated_boxes, IC_delta, IC_vbv)
+crit_loss, gp = critic.train_step_critic(generator=generator,optimizer=critic_optimizer, T21_big=T21_standardized,
+                                         T21_small=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None)
+gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
+                                                      T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
 """
-import matplotlib.pyplot as plt
-import numpy as np
-def standardize(data, data_stats):
-    mean, var = tf.nn.moments(data_stats, axes=[1,2,3], keepdims=True) #mean across xyz with shape=(batch,x,y,z,channels)
-    mean = mean.numpy()
-    var = var.numpy()
-    for i,(m,v) in enumerate(zip(mean,var)):
-        if m==0 and v==0:
-            mean[i] = 0
-            var[i] = 1
-            #print("mean and var both zero for i={0} j={1}, setting mean to {2} and var to {3}".format(i,np.nan,mean[i],var[i]))
-    std = var**0.5
-    return (data - mean) / std
-
-fig, axes = plt.subplots(1,4,figsize=(20,5))
-
-T21_target_standardized = standardize(T21_target, T21_target)
-T21_std = np.std(T21_target_standardized[0,:,:,:,:].numpy().flatten())
-axes[0].imshow(T21_target_standardized[0,:,:,T21_target_standardized.shape[3]//2,0].numpy().squeeze(), vmin=-3*T21_std, vmax=3*T21_std)
-
-#pelu activation
-act = PeLU(a=10.0, b=10.0, c=1.0, trainable=False)
-axes[1].imshow(act(T21_target_standardized)[0,:,:,T21_target_standardized.shape[3]//2,0].numpy().squeeze(), vmin=-3*T21_std, vmax=3*T21_std)
-
-axes[2].hist(T21_target_standardized[0,:,:,:,:].numpy().flatten(), density=True, bins=100, alpha=0.5, label="real")
-axes[3].hist(act(T21_target_standardized)[0,:,:,:,:].numpy().flatten(), density=True, bins=100, alpha=0.5, label="fake")
-plt.savefig("pelu_activation3.png")
-"""
-#show pelu activation for varying parameters
-"""
-import numpy as np
-import matplotlib.pyplot as plt
-a = 2.5 #np.logspace(-2, 1, num=4)
-b = np.linspace(0.1, 5.0, num=16)
-
-fig, axes = plt.subplots(4,4,figsize=(20,10))
-x = np.linspace(-5,5,100)
-for i in range(4):
-    for j in range(4):
-        k = np.ravel_multi_index((i,j), (4,4))
-        act = PeLU(a=a, b=b[k], c=1.0, trainable=False)
-        axes[i,j].plot(x, act(x), label="a={0:.2f}, b={1:.2f}".format(a,b[k]))
-        axes[i,j].plot(x, x, label="identity")
-        axes[i,j].legend()
-
-"""
-#plt.savefig("pelu_activation.png")
-
-
-
