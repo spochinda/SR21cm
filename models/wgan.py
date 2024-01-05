@@ -8,7 +8,7 @@ class Critic(tf.keras.Model):
                  kernel_sizes=[7,5,3,1],
                  kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                  bias_initializer=tf.keras.initializers.Constant(value=0.1),
-                 lbda=1e1, activation='tanh',
+                 lambda_gp=1e1, activation='tanh',
                  network_model='modified'):
         super(Critic, self).__init__()
         #self.T21_shape = T21_shape
@@ -18,7 +18,7 @@ class Critic(tf.keras.Model):
         self.crop = int((max(self.kernel_sizes)-1))
         self.kernel_initializer = kernel_initializer
         self.bias_initializer = bias_initializer
-        self.lbda = lbda
+        self.lambda_gp = lambda_gp
         self.activation = activation
         self.network_model = network_model
         
@@ -140,7 +140,7 @@ class Critic(tf.keras.Model):
                                                 )(output)
             
         elif self.network_model == 'original_layer_norm':
-            layernorm = True
+            layernorm = False
             output = tf.keras.layers.Conv3D(filters=8, kernel_size=(self.kernel_sizes[0], self.kernel_sizes[0], self.kernel_sizes[0]), 
                                                 kernel_initializer=self.kernel_initializer, #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                                                 bias_initializer=self.bias_initializer, #tf.keras.initializers.Constant(value=0.1),
@@ -213,7 +213,7 @@ class Critic(tf.keras.Model):
             critic_output = self.forward(xhat, IC_delta, IC_vbv)
         gradients = tape.gradient(critic_output, xhat)
         l2_norm = tf.math.reduce_euclidean_norm(gradients, axis=[1,2,3])
-        gp = tf.reduce_mean(self.lbda * tf.square(l2_norm - 1))
+        gp = tf.reduce_mean(self.lambda_gp * tf.square(l2_norm - 1))
         
         W_real = tf.reduce_mean(self.forward(T21_big, IC_delta, IC_vbv))
         W_gen = tf.reduce_mean(self.forward(generated_boxes, IC_delta, IC_vbv))
@@ -257,6 +257,7 @@ class Generator(tf.keras.Model):
                  kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.1, seed=None),
                  bias_initializer=tf.keras.initializers.Constant(value=0.1),
                  network_model='original',
+                 lambda_mse=1.,
                  residual_block_kwargs= {'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]},
                  inception_kwargs={}):
         super(Generator, self).__init__()
@@ -268,6 +269,7 @@ class Generator(tf.keras.Model):
         self.kernel_initializer = kernel_initializer
         self.bias_initializer = bias_initializer
         self.network_model = network_model
+        self.lambda_mse = lambda_mse
         self.residual_block_kwargs = residual_block_kwargs
         self.inception_kwargs = inception_kwargs
         self.build_generator_model()
@@ -340,9 +342,9 @@ class Generator(tf.keras.Model):
                                           strides=(1, 1, 1), padding='valid', data_format="channels_last",
                                           activation=None)(data)
         elif self.network_model =='original_variable_output_activation':
-            layernorm = True
+            layernorm = False
             T21 = InceptionLayer(filters=6, **self.inception_kwargs)(T21)
-            T21 = tf.keras.layers.LayerNormalization()(T21) if layernorm else T21
+            #T21 = tf.keras.layers.LayerNormalization()(T21) if layernorm else T21
             T21 = tf.keras.layers.LeakyReLU(alpha=0.1)(T21)
 
             delta = InceptionLayer(filters=6, **self.inception_kwargs)(inputs_delta)
@@ -359,7 +361,7 @@ class Generator(tf.keras.Model):
                 data = tf.keras.layers.Concatenate(axis=4)([T21, delta])
 
             data = InceptionLayer(filters=6, **self.inception_kwargs)(data)
-            data = tf.keras.layers.LayerNormalization()(data) if layernorm else data
+            #data = tf.keras.layers.LayerNormalization()(data) if layernorm else data
             data = tf.keras.layers.LeakyReLU(alpha=0.1)(data)
             data = tf.keras.layers.Conv3D(filters=1,
                                           kernel_size=(1, 1, 1),
@@ -436,9 +438,9 @@ class Generator(tf.keras.Model):
         W_real = critic.forward(T21_big, IC_delta, IC_vbv)
         W_gen = critic.forward(generated_boxes, IC_delta, IC_vbv)
 
-        loss = - tf.reduce_mean(W_gen - W_real) #- tf.reduce_mean(- W_gen)
-        #loss = tf.reduce_mean(tf.math.reduce_euclidean_norm(T21_big-generated_boxes, axis=[1,2,3])) #l2 norm loss
-        return loss
+        mse = tf.keras.losses.MeanSquaredError()(T21_big, generated_boxes)
+        loss = - tf.reduce_mean(W_gen - W_real) + self.lambda_mse * mse
+        return loss, mse
 
     @tf.function
     def train_step_generator(self, critic, optimizer, T21_small, T21_big, IC_delta, IC_vbv=None):
@@ -451,12 +453,12 @@ class Generator(tf.keras.Model):
         with tf.GradientTape() as gen_tape: 
             generated_boxes = self.forward(T21_small, IC_delta, IC_vbv)
             #generated_output = Critic(generated_boxes, IC_delta, IC_vbv)
-            gen_loss = self.generator_loss(critic, generated_boxes, T21_big, IC_delta, IC_vbv)
+            gen_loss, mse = self.generator_loss(critic, generated_boxes, T21_big, IC_delta, IC_vbv)
 
         grad_gen = gen_tape.gradient(gen_loss, self.model.trainable_variables)
         optimizer.apply_gradients(zip(grad_gen, self.model.trainable_variables))
 
-        return gen_loss
+        return gen_loss,mse
         
     @tf.function    
     def forward(self, T21_train, IC_delta, IC_vbv=None):
@@ -694,7 +696,7 @@ generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializer
                       network_model='original_variable_output_activation', inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                 bias_initializer='zeros',
-                lbda=10., vbv_shape=None, network_model='original_layer_norm')
+                lambda_gp=10., vbv_shape=None, network_model='original_layer_norm')
 critic_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, beta_1=0.5, beta_2=0.999)
 generator_optimizer = tf.keras.optimizers.Adam(learning_rate=1e-3, beta_1=0.5, beta_2=0.999)
 Data_validation = DataManager(path, redshifts=[10,], IC_seeds=[1008,1009,1010])
@@ -705,6 +707,6 @@ delta_standardized = standardize(delta, delta, subtract_mean=False)
 
 crit_loss, gp = critic.train_step_critic(generator=generator,optimizer=critic_optimizer, T21_big=T21_standardized,
                                          T21_small=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None)
-gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
+gen_loss, mse = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
                                                       T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
 """
