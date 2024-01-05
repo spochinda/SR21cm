@@ -175,8 +175,8 @@ T21, delta, vbv, T21_lr = Data.data(augment=False, augments=24, low_res=True)
 
 
 
-n_critic = 10
-epochs = 10000
+n_critic = 3#10
+epochs = 2#10000
 beta_1 = 0.5
 beta_2 = 0.999
 #calculate decay steps from T21  and epochs. I want the learning rate to decay to 1e-5 after 200 epochs
@@ -249,7 +249,7 @@ tf.keras.utils.plot_model(generator.model,
 
 
 
-Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
+Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1002)))#1008
 dataset = Data.data(augment=True, augments=9, low_res=True)
 dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
@@ -260,11 +260,13 @@ dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
 
 
-model_path = path+"/trained_models/model_{0}".format(index+111)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(index+112)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
     os.mkdir(model_path+"/logs")
+    train_summary_writer = tf.summary.create_file_writer(model_path+"/logs")
+
 ckpt = tf.train.Checkpoint(generator_model=generator.model, critic_model=critic.model, 
                            generator_optimizer=generator_optimizer, critic_optimizer=critic_optimizer,
                            )
@@ -304,7 +306,6 @@ for e in range(epochs):
     critic_losses = []
     gradient_penalty = []
     batches = dataset.shuffle(buffer_size=len(dataset)).batch(4)
-    #print("Clipping layer: ", generator.model.layers[-1].trainable_variables[0].numpy()/generator.model.layers[-1].sensitivity)
     for i, (T21, delta, vbv, T21_lr) in enumerate(batches):
         #print("shape inputs: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
         start_start = time.time()
@@ -313,21 +314,34 @@ for e in range(epochs):
         delta_standardized = delta #standardize(delta, delta, subtract_mean=False)
         vbv_standardized = None #vbv #standardize(vbv, vbv)
         
-        try:
-            crit_loss, gp = critic.train_step_critic(generator=generator, optimizer=critic_optimizer, T21_big=T21_standardized, 
+        crit_loss, gp = critic.train_step_critic(generator=generator, optimizer=critic_optimizer, T21_big=T21_standardized, 
                                                     T21_small=T21_lr_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
-        except Exception as e:
-            print(e)
         critic_losses.append(crit_loss)
         gradient_penalty.append(gp)
         if i%n_critic == 0:
             #print("Output activation settings before optimizing:", generator.model.get_layer("pe_lu").get_config())
             gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
                                                       T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
-            #print("Output activation settings after optimizing:", generator.model.get_layer("pe_lu").get_config())
             generator_losses.append(gen_loss)
         
         print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
+    
+    critic_loss = tf.keras.metrics.Mean('critic_loss', dtype=tf.float32)
+    generator_loss = tf.keras.metrics.Mean('generator_loss', dtype=tf.float32)
+    gp_loss = tf.keras.metrics.Mean('gp_loss', dtype=tf.float32)
+    critic_loss.update_state(critic_losses)
+    generator_loss.update_state(generator_losses)
+    gp_loss.update_state(gradient_penalty)
+    with train_summary_writer.as_default():
+        #merged_summary = tf.summary.merge(losses.values())
+        tf.summary.scalar('loss/Wloss', critic_loss.result().numpy(), step=e)
+        tf.summary.scalar('loss/Gloss', generator_loss.result().numpy(), step=e)
+        tf.summary.scalar('loss/Wgp', gp_loss.result().numpy(), step=e)
+    #reset state
+    critic_loss.reset_states()
+    generator_loss.reset_states()
+    gp_loss.reset_states()
+
     
     #save losses
     with open(model_path+"/losses.pkl", "rb") as f: # Open the file in read mode and get data
