@@ -29,23 +29,35 @@ print("Available devices: ", tf.config.list_physical_devices(), flush=True)
 
 
 
-def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True, subtract_mean=False):
+def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True, subtract_mean=False, plot_loss_fraction=True):
     fig = plt.figure(tight_layout=True, figsize=(20,10))
     gs = gridspec.GridSpec(len(IC_seeds)+1, 7, figure=fig)
-    ax_loss = fig.add_subplot(gs[0,:])
-
+    if not plot_loss_fraction:
+        ax_loss = fig.add_subplot(gs[0,:])
+    else:
+        ax_loss = fig.add_subplot(gs[0,:-3])
+        ax_loss_fraction = fig.add_subplot(gs[0,-3:])
     #loss row
     ax_loss.plot(range(len(generator_losses_epoch)), generator_losses_epoch, label="generator")
     ax_loss.plot(range(len(critic_losses_epoch)), critic_losses_epoch, label="critic")
     ax_loss.plot(range(len(critic_losses_epoch)), np.array(critic_losses_epoch)-np.array(gradient_penalty_epoch), label="$W_{{gen}}-W_{{real}}$")
     ax_loss.plot(range(len(gradient_penalty_epoch)), gradient_penalty_epoch, label="gradient penalty")
-    ax_loss.set_title("lambda={0}, learning rate={1}".format(lbda, learning_rate))
+    ax_loss.plot(range(len(generator_mse_losses_epoch)), generator_mse_losses_epoch, label="generator mse")
+    print(lambda_mse, lambda_gp, learning_rate, flush=True)
+    ax_loss.set_title("lambda_gp={0:.2f}, lambda_mse={1:.5f}, learning rate={2:.5f}".format(lambda_gp, lambda_mse, learning_rate))
     ax_loss.set_xlabel("Epoch")
     ax_loss.set_ylabel("Loss")
     #ax_loss.set_yscale("symlog")
     ax_loss.grid()
-    
     ax_loss.legend()
+
+    if plot_loss_fraction:
+        ax_loss_fraction.plot(range(len(generator_losses_epoch)), lambda_mse*np.array(generator_mse_losses_epoch)/np.array(generator_losses_epoch), label="generator mse/Gloss")
+        ax_loss_fraction.plot(range(len(critic_losses_epoch)), np.array(gradient_penalty_epoch)/np.array(critic_losses_epoch), label="gradient penalty/Wloss")
+        ax_loss_fraction.set_xlabel("Epoch")
+        ax_loss_fraction.set_ylabel("Loss fraction")
+        ax_loss_fraction.grid()
+        ax_loss_fraction.legend()
 
     # Validation data
     Data_validation = DataManager(path, redshifts=[redshift,], IC_seeds=IC_seeds)
@@ -124,7 +136,7 @@ def plot_and_save(IC_seeds, redshift, sigmas, plot_slice=True, subtract_mean=Fal
                 ax_vbv.legend()
 
     # Save figure
-    plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr__.png".format(lbda, learning_rate))
+    plt.savefig(model_path+"/loss_history_and_validation_lambda_{0}_lr__.png".format(lambda_gp, learning_rate))
     plt.close()
 
 def plot_lr(resume=False):
@@ -167,14 +179,6 @@ def plot_anim(generator, T21_big, T21_lr, IC_delta, IC_vbv, epoch=None, layer_na
     anim.save(model_path + "/anim.gif", dpi=300, writer=PillowWriter(fps=1))
     plt.close()
 
-
-## check T21_lr
-# load data
-Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000, 1010)))
-T21, delta, vbv, T21_lr = Data.data(augment=False, augments=24, low_res=True)
-
-
-
 n_critic = 10
 epochs = 10000
 beta_1 = 0.5
@@ -188,16 +192,17 @@ beta_2 = 0.999
     #initial_learning_rate=9e-3,#3e-3,
     #decay_steps=10,#10,
     #decay_rate=0.9)
-learning_rate = np.logspace(-4,-2.5,4)[1:]#0.01#np.logspace(-4,1,11).tolist()#[1e-2, 1e-3, 3e-4]#[3e-3, 1e-3, 3e-4] #np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
+learning_rate = np.logspace(-4,-2.5,4)[:-2]#0.01#np.logspace(-4,1,11).tolist()#[1e-2, 1e-3, 3e-4]#[3e-3, 1e-3, 3e-4] #np.logspace(-5,-5,1) #np.logspace(-6,-5,2) #np.logspace(-4,-1,4) #1e-4
 learning_rate_g = learning_rate
-lbda = [10.,] #np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
+lambda_gp = 10.#[10.,] #np.logspace(1,1,1) #np.logspace(0,0,1) #np.logspace(-4,0,5) #1e-2
+lambda_mse = np.logspace(-4,8,8)
 
 
 
-combinations = list(itertools.product(lbda, learning_rate))
-lbda,learning_rate = combinations[index]
+combinations = list(itertools.product(lambda_mse, learning_rate))
+lambda_mse,learning_rate = combinations[index]
 
-print("Params: ", lbda, learning_rate, len(combinations),flush=True)
+print("Params: ", lambda_mse, learning_rate, len(combinations),flush=True)
 
 inception_kwargs = {
             #'input_channels': self.T21_shape[-1],
@@ -218,10 +223,12 @@ inception_kwargs = {
 
 generator = Generator(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                       bias_initializer='zeros', 
-                      network_model='original_variable_output_activation', inception_kwargs=inception_kwargs, vbv_shape=None)
+                      network_model='original_variable_output_activation',
+                      lambda_mse=lambda_mse, 
+                      inception_kwargs=inception_kwargs, vbv_shape=None)
 critic = Critic(kernel_initializer='glorot_uniform', #tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.3, seed=None),
                 bias_initializer='zeros',
-                lbda=lbda, vbv_shape=None, network_model='original_layer_norm')
+                lambda_gp=lambda_gp, vbv_shape=None, network_model='original_layer_norm')
 
 if False:
     import tensorflow_addons as tfa
@@ -253,14 +260,19 @@ Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
 dataset = Data.data(augment=True, augments=9, low_res=True)
 dataset = tf.data.Dataset.from_tensor_slices(dataset)
 
+Data_validation = DataManager(path, redshifts=[10,], IC_seeds=[1008,1009,1010])
+T21_validation, delta_validation, vbv_validation, T21_lr_validation = Data_validation.data(augment=False, augments=9, low_res=True) #T21, delta, vbv, T21_lr
+T21_validation_standardized = standardize(T21_validation, T21_lr_validation, subtract_mean=False)
+T21_lr_validation_standardized = standardize(T21_lr_validation, T21_lr_validation, subtract_mean=False)
+delta_validation_standardized = standardize(delta_validation, delta_validation, subtract_mean=True)
+vbv_validation_standardized = None #standardize(vbv_validation, vbv_validation)
 
 
 
 
 
 
-
-model_path = path+"/trained_models/model_{0}".format(index+111)#index+20)#22
+model_path = path+"/trained_models/model_{0}".format(index)#index+20)#22
 #make model directory if it doesn't exist:
 if os.path.exists(model_path)==False:
     os.mkdir(model_path)
@@ -290,19 +302,23 @@ else:
         generator_losses_epoch = []
         critic_losses_epoch = []
         gradient_penalty_epoch = []
-        pickle.dump((generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch), f)
+        generator_mse_losses_epoch = []
+        pickle.dump((generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch, generator_mse_losses_epoch), f)
+        
 
 
 
 print("Starting training...", flush=True)
 lr_generator = []
 lr_critic = []
+dsq_mse = 1e20
 for e in range(epochs):
     start = time.time()
     
     generator_losses = []
     critic_losses = []
     gradient_penalty = []
+    generator_mse = []
     batches = dataset.shuffle(buffer_size=len(dataset)).batch(4)
     #print("Clipping layer: ", generator.model.layers[-1].trainable_variables[0].numpy()/generator.model.layers[-1].sensitivity)
     for i, (T21, delta, vbv, T21_lr) in enumerate(batches):
@@ -310,7 +326,7 @@ for e in range(epochs):
         start_start = time.time()
         T21_standardized = standardize(T21, T21_lr, subtract_mean=False)
         T21_lr_standardized = standardize(T21_lr, T21_lr, subtract_mean=False)
-        delta_standardized = delta #standardize(delta, delta, subtract_mean=False)
+        delta_standardized = standardize(delta, delta, subtract_mean=True)
         vbv_standardized = None #vbv #standardize(vbv, vbv)
         
         try:
@@ -322,29 +338,56 @@ for e in range(epochs):
         gradient_penalty.append(gp)
         if i%n_critic == 0:
             #print("Output activation settings before optimizing:", generator.model.get_layer("pe_lu").get_config())
-            gen_loss = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
+            gen_loss, mse = generator.train_step_generator(critic=critic, optimizer=generator_optimizer, T21_small=T21_lr_standardized, 
                                                       T21_big=T21_standardized, IC_delta=delta_standardized, IC_vbv=None)#vbv_standardized)
             #print("Output activation settings after optimizing:", generator.model.get_layer("pe_lu").get_config())
             generator_losses.append(gen_loss)
+            generator_mse.append(mse)
         
         print("Time for batch {0} is {1:.2f} sec".format(i + 1, time.time() - start_start), flush=True)
     
     #save losses
     with open(model_path+"/losses.pkl", "rb") as f: # Open the file in read mode and get data
-        generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch = pickle.load(f)
+        generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch, generator_mse_losses_epoch = pickle.load(f)
     # Append the new values to the existing data
     generator_losses_epoch.append(np.mean(generator_losses))
     critic_losses_epoch.append(np.mean(critic_losses))
     gradient_penalty_epoch.append(np.mean(gradient_penalty))
+    generator_mse_losses_epoch.append(np.mean(generator_mse))
     with open(model_path+"/losses.pkl", "wb") as f: # Open the file in write mode and dump the data
-        pickle.dump((generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch), f)
+        pickle.dump((generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch,generator_mse_losses_epoch), f)
     
     #checkpoint
     #if e%2 == 0:
-    print("Saving checkpoint...", flush=True)
-    manager.save()
-    print("Checkpoint saved!", flush=True)
+    try:
+        min_tester = np.min(generator_mse_losses_epoch[:-1])
+    except:
+        min_tester=1e20#np.NaN
+    if (np.mean(generator_mse) < min_tester):
+        print("Generator mse loss improved, checking dsq...", flush=True)
+        generated_boxes_validation = generator.forward(T21_lr_validation_standardized, delta_validation_standardized, vbv_validation_standardized)
+        dsq_mse_ = []
+        
+        for i in range(generated_boxes_validation.shape[0]):
+            k_gen, Pk_gen = calculate_power_spectrum(data_x=generated_boxes_validation[i,:,:,:,0], Lpix=3, kbins=100)
+            k_real, Pk_real = calculate_power_spectrum(data_x=T21_validation_standardized[i,:,:,:,0], Lpix=3, kbins=100)
+            dsq_gen = Pk_gen*k_gen**3/(2*np.pi**2)
+            dsq_real = Pk_real*k_real**3/(2*np.pi**2)
+            dsq_mse_.append(np.nanmean((dsq_gen-dsq_real)**2))
 
+        dsq_mse_ = np.nanmean(dsq_mse_)
+        print("Current dsq_mse: {0:.2f}, Historic minimum dsq_mse: {1:.2f}".format(dsq_mse_, dsq_mse), flush=True)
+        if (dsq_mse_ < dsq_mse):
+            dsq_mse = dsq_mse_
+            print("Saving checkpoint...", flush=True)
+            print("Epoch: {0}\nGmse: {1:.2f}\ndsq_mse: {2:.2f}".format(e, np.mean(generator_mse), dsq_mse) , flush=True)
+            manager.save()
+            print("Checkpoint saved!", flush=True)
+        else:
+            print("dsq did not improve. Not saving checkpoint...", flush=True)
+    else:
+        print("Generator mse did not improve. Not saving checkpoint...", flush=True)
+            
     #"validation: plot and savefig loss history, and histograms and imshows for two models for every 10th epoch"
     #with gridspec loss history should extend the whole top row and the histograms and imshows should fill one axes[i,j] for the bottom rows
     if e%1 == 0:
@@ -371,9 +414,9 @@ for e in range(epochs):
 
 
 with open(model_path+"/losses.pkl", "rb") as f:
-    generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch = pickle.load(f)
+    generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch, generator_mse_losses_epoch = pickle.load(f)
 #print last 10 losses and total number of epochs
-print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:]))
+print("Last 10 losses: \nGenerator: {0} \nCritic: {1} \nGradient penalty: {2}\nGenerator mse: {3}".format(generator_losses_epoch[-10:], critic_losses_epoch[-10:], gradient_penalty_epoch[-10:],generator_mse_losses_epoch[-10:]), flush=True)
 """
 """
 
