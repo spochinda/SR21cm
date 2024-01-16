@@ -258,6 +258,7 @@ class Generator(tf.keras.Model):
                  bias_initializer=tf.keras.initializers.Constant(value=0.1),
                  network_model='original',
                  lambda_mse=1.,
+                 lambda_dsq_mse=1.,
                  residual_block_kwargs= {'activation': [tf.keras.layers.LeakyReLU(alpha=0.1), tf.keras.layers.Activation('tanh'), tf.keras.layers.LeakyReLU(alpha=0.1)]},
                  inception_kwargs={}):
         super(Generator, self).__init__()
@@ -270,6 +271,7 @@ class Generator(tf.keras.Model):
         self.bias_initializer = bias_initializer
         self.network_model = network_model
         self.lambda_mse = lambda_mse
+        self.lambda_dsq_mse = lambda_dsq_mse
         self.residual_block_kwargs = residual_block_kwargs
         self.inception_kwargs = inception_kwargs
         self.build_generator_model()
@@ -439,8 +441,14 @@ class Generator(tf.keras.Model):
         W_gen = critic.forward(generated_boxes, IC_delta, IC_vbv)
 
         mse = tf.keras.losses.MeanSquaredError()(T21_big, generated_boxes)
-        loss = - tf.reduce_mean(W_gen - W_real) + self.lambda_mse * mse
-        return loss, mse
+        #generated_boxes_validation = generator.forward(T21_lr_validation_standardized, delta_validation_standardized, vbv_validation_standardized)
+        #dsq_mse = tf.py_function(func=calculate_power_spectrum_mse, inp=[generated_boxes, T21_big, 3, 100], Tout=tf.float32)
+        dsq_mse = calculate_power_spectrum_mse(generated_boxes=generated_boxes, T21_batch=T21_big, Lpix=3, kbins=100) if self.lambda_dsq_mse!=0. else 0.
+        
+        loss = - tf.reduce_mean(W_gen - W_real) + self.lambda_mse * mse + self.lambda_dsq_mse * dsq_mse
+
+        #tf.print("loss: ", loss, "mse: ", mse, "dsq_mse: ", dsq_mse)
+        return loss, mse, dsq_mse
 
     @tf.function
     def train_step_generator(self, critic, optimizer, T21_small, T21_big, IC_delta, IC_vbv=None):
@@ -453,12 +461,12 @@ class Generator(tf.keras.Model):
         with tf.GradientTape() as gen_tape: 
             generated_boxes = self.forward(T21_small, IC_delta, IC_vbv)
             #generated_output = Critic(generated_boxes, IC_delta, IC_vbv)
-            gen_loss, mse = self.generator_loss(critic, generated_boxes, T21_big, IC_delta, IC_vbv)
+            gen_loss, mse, dsq_mse= self.generator_loss(critic, generated_boxes, T21_big, IC_delta, IC_vbv)
 
         grad_gen = gen_tape.gradient(gen_loss, self.model.trainable_variables)
         optimizer.apply_gradients(zip(grad_gen, self.model.trainable_variables))
 
-        return gen_loss,mse
+        return gen_loss, mse, dsq_mse
         
     @tf.function    
     def forward(self, T21_train, IC_delta, IC_vbv=None):
