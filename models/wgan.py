@@ -487,7 +487,7 @@ class InceptionLayer(tf.keras.layers.Layer):
     def build(self):
         #super().build(input_shape)
         self.conv_1x1x1_7x7x7 = tf.keras.layers.Conv3D(filters=self.filters, kernel_size=(1, 1, 1),
-                                                       activation=None, )
+                                                       activation=None, **self.kwargs) #added kwargs
         self.conv_7x7x7 = tf.keras.layers.Conv3D(filters=self.filters, kernel_size=(7, 7, 7),
                                                  activation=None, **self.kwargs)
         self.conv_1x1x1_5x5x5 = tf.keras.layers.Conv3D(filters=self.filters, kernel_size=(1, 1, 1),

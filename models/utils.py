@@ -340,17 +340,18 @@ def standardize(data, data_stats, subtract_mean = True):
 
 
 def plot_and_save(generator, critic, learning_rate, 
-                  IC_seeds, redshift, sigmas, 
+                  IC_seeds, redshift, sigmas, step_skip_validation=1,
                   loss_file=None, plot_slice=True, subtract_mean=False, 
-                  include_vbv = False, plot_loss=True, plot_loss_terms=True, savefig_path=None):
+                  include_vbv = False, plot_loss=True, plot_loss_terms=True, 
+                  seed=None, ncritic=None, savefig_path=None):
 
     if subtract_mean:
         ylabel = "Standardized"
     else:
         ylabel = "Std. norm."
-    fig = plt.figure(tight_layout=True, figsize=(20,13))
     ncols = 6 + include_vbv
     nrows = len(IC_seeds)+plot_loss
+    fig = plt.figure(tight_layout=True, figsize=(20,20//(ncols/nrows)))
     gs = GS(nrows, ncols, figure=fig)
 
     # Validation data
@@ -368,10 +369,20 @@ def plot_and_save(generator, critic, learning_rate,
     if plot_loss:
         
         if loss_file is not None:
-            with open(loss_file, "rb") as f: # Open the file in read mode and get data
-                generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch,generator_mse_losses_epoch,generator_dsq_mse_losses_epoch, generator_losses_epoch_validation, critic_losses_epoch_validation, gradient_penalty_epoch_validation,generator_mse_losses_epoch_validation,generator_dsq_mse_losses_epoch_validation = pickle.load(f)
+            try: 
+                with open(loss_file, "rb") as f: # Open the file in read mode and get data
+                    generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch,generator_mse_losses_epoch,generator_dsq_mse_losses_epoch, generator_losses_epoch_validation, critic_losses_epoch_validation, gradient_penalty_epoch_validation,generator_mse_losses_epoch_validation,generator_dsq_mse_losses_epoch_validation = pickle.load(f)
+            except:#from before I implemented saving validation losses
+                with open(loss_file, "rb") as f: # Open the file in read mode and get data
+                    generator_losses_epoch, critic_losses_epoch, gradient_penalty_epoch, generator_mse_losses_epoch, generator_dsq_mse_losses_epoch = pickle.load(f)
+                    generator_losses_epoch_validation = len(generator_losses_epoch)*[np.NaN]
+                    critic_losses_epoch_validation = len(generator_losses_epoch_validation)*[np.NaN]
+                    gradient_penalty_epoch_validation = len(generator_losses_epoch_validation)*[np.NaN]
+                    generator_mse_losses_epoch_validation  = len(generator_losses_epoch_validation)*[np.NaN]
+                    generator_dsq_mse_losses_epoch_validation = len(generator_losses_epoch_validation)*[np.NaN]
+
         if not plot_loss_terms:
-            ax_loss = fig.add_subplot(gs[0,:], wspace = 0.3)
+            ax_loss = fig.add_subplot(gs[0,:], wspace = 0.2)
         else:
             loss_gs = SGS(1,4, gs[0,:])
             ax_loss = fig.add_subplot(loss_gs[0,0])
@@ -380,29 +391,31 @@ def plot_and_save(generator, critic, learning_rate,
             ax_loss_validation = fig.add_subplot(loss_gs[0,3])
 
         #loss row
-        look_back = int(len(generator_losses_epoch)//(10/4)) #look back 40% of epochs
+        look_back = int(len(generator_losses_epoch)//(10/10)) #look back 40% of epochs
         
         ax_loss.plot(range(len(generator_losses_epoch)), generator_losses_epoch, label="Generator")
         ax_loss.plot(range(len(critic_losses_epoch)), critic_losses_epoch, label="Critic")
-        ymin = min(np.min(generator_losses_epoch[-look_back:]), np.min(critic_losses_epoch[-look_back:]))
-        ymax = max(np.max(generator_losses_epoch[-look_back:]), np.max(critic_losses_epoch[-look_back:]))
-        ax_loss.set_ylim(ymin,ymax)
+        ymin = min(np.nanmin(generator_losses_epoch[-look_back:]), np.min(critic_losses_epoch[-look_back:]))
+        ymax = max(np.nanmax(generator_losses_epoch[-look_back:]), np.max(critic_losses_epoch[-look_back:]))
+        if not (np.isnan(ymin) or np.isnan(ymax)):
+            ax_loss.set_ylim(ymin,ymax) 
         ax_loss.set_xlabel("Epoch")
         ax_loss.set_ylabel("Loss")
         #ax_loss.set_yscale("symlog")
         ax_loss.grid()
         ax_loss.legend()
 
-        plt.suptitle("$\lambda_\mathrm{{gp}}$={0:.2f}, $\lambda_\mathrm{{MSE}}$={1:.2f}, $\lambda_\mathrm{{\Delta^2, MSE}}$={2:.2f}, learning rate$\\times 10^{{-4}}$={3:.4f}".format(critic.lambda_gp, generator.lambda_mse, generator.lambda_dsq_mse, learning_rate*1e4))
+        plt.suptitle("$\lambda_\mathrm{{gp}}$={0:.2f}, $\lambda_\mathrm{{MSE}}$={1:.2f}, $\lambda_\mathrm{{\Delta^2, MSE}}$={2:.2f}, learning rate$\\times 10^{{-4}}$={3:.4f}, seed={4}, ncritic={5}".format(critic.lambda_gp, generator.lambda_mse, generator.lambda_dsq_mse, learning_rate*1e4, seed, ncritic))
 
         if plot_loss_terms:
             ax_loss_generator.plot(range(len(generator_losses_epoch)), generator_losses_epoch, label="$G_\mathrm{{total}}$")
             ax_loss_generator.plot(range(len(generator_losses_epoch)), generator_losses_epoch-generator.lambda_mse*np.array(generator_mse_losses_epoch)-generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch), label="-(Wgen-Wreal)")
             ax_loss_generator.plot(range(len(generator_losses_epoch)), generator.lambda_mse*np.array(generator_mse_losses_epoch), label="$G_\mathrm{{MSE}}$")
             ax_loss_generator.plot(range(len(generator_losses_epoch)), generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch), label="$G_\mathrm{{\Delta^2, MSE}}$")
-            ymin = min(np.min(generator_losses_epoch[-look_back:]), np.min(generator_losses_epoch[-look_back:]-generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]-generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]), np.min(generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]), np.min(generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]))
-            ymax = max(np.max(generator_losses_epoch[-look_back:]), np.max(generator_losses_epoch[-look_back:]-generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]-generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]), np.max(generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]), np.max(generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]))
-            ax_loss_generator.set_ylim(ymin,ymax)
+            ymin = min(np.nanmin(generator_losses_epoch[-look_back:]), np.nanmin(generator_losses_epoch[-look_back:]-generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]-generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]), np.nanmin(generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]), np.nanmin(generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]))
+            ymax = max(np.nanmax(generator_losses_epoch[-look_back:]), np.nanmax(generator_losses_epoch[-look_back:]-generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]-generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]), np.nanmax(generator.lambda_mse*np.array(generator_mse_losses_epoch)[-look_back:]), np.nanmax(generator.lambda_dsq_mse*np.array(generator_dsq_mse_losses_epoch)[-look_back:]))
+            if not (np.isnan(ymin) or np.isnan(ymax)):
+                ax_loss_generator.set_ylim(ymin,ymax)
             ax_loss_generator.set_xlabel("Epoch")
             ax_loss_generator.set_ylabel("Loss")
             ax_loss_generator.grid()
@@ -419,9 +432,14 @@ def plot_and_save(generator, critic, learning_rate,
             ax_loss_critic.grid()
             ax_loss_critic.legend()
 
-            ax_loss_validation.plot(range(len(generator_losses_epoch_validation)), np.array(generator_mse_losses_epoch_validation)/np.array(generator_mse_losses_epoch), label="$G_\mathrm{{MSE,validation}}/G_\mathrm{{MSE,train}}$")
-            ax_loss_validation.plot(range(len(generator_losses_epoch_validation)), np.array(generator_dsq_mse_losses_epoch_validation)/np.array(generator_dsq_mse_losses_epoch), label="$G_\mathrm{{\Delta^2, MSE,validation}}/G_\mathrm{{\Delta^2, MSE,train}}$")
-            print(np.array(generator_dsq_mse_losses_epoch_validation)/np.array(generator_dsq_mse_losses_epoch))
+            #print("MSE ratio before skippint: ", np.array(generator_mse_losses_epoch_validation)/np.array(generator_mse_losses_epoch))
+            #print("dsq MSE ratio before skippint: ", np.array(generator_dsq_mse_losses_epoch_validation)/np.array(generator_dsq_mse_losses_epoch))
+            mse_ratio = np.array(generator_mse_losses_epoch_validation)[::step_skip_validation]/np.array(generator_mse_losses_epoch)[::step_skip_validation]
+            dsq_mse_ratio = np.array(generator_dsq_mse_losses_epoch_validation)[::step_skip_validation]/np.array(generator_dsq_mse_losses_epoch)[::step_skip_validation]
+            #print("MSE ratio: ", mse_ratio)
+            #print("dsq MSE ratio: ", dsq_mse_ratio)
+            ax_loss_validation.plot(range(len(generator_losses_epoch_validation))[::step_skip_validation], mse_ratio, label="$G_\mathrm{{MSE,validation}}/G_\mathrm{{MSE,train}}$")
+            ax_loss_validation.plot(range(len(generator_losses_epoch_validation))[::step_skip_validation], dsq_mse_ratio, label="$G_\mathrm{{\Delta^2, MSE,validation}}/G_\mathrm{{\Delta^2, MSE,train}}$")
             #ymin = min(np.min(generator_mse_losses_epoch_validation[-look_back:]), np.min(generator_dsq_mse_losses_epoch_validation[-look_back:]))
             #ymax = max(np.max(generator_mse_losses_epoch_validation[-look_back:]), np.max(generator_dsq_mse_losses_epoch_validation[-look_back:]))
             #ax_loss_validation.set_ylim(ymin,ymax)
@@ -496,8 +514,8 @@ def plot_and_save(generator, critic, learning_rate,
 
     # Save figure
     plt.savefig(savefig_path)
+    print("Saved figure in {0}".format(savefig_path))
     plt.close()
-
 
 
 """
