@@ -18,7 +18,7 @@ device = (
     else "cpu"
 )
 device="cpu" #because 3D convolutions are not supported on MPS
-print(f"Using {device} device")
+print(f"Using {device} device", flush=True)
 
 class Swish(nn.Module):
     def forward(self, x):
@@ -461,7 +461,6 @@ def normalize(x):
     x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
     x = (x - x_min) / (x_max - x_min)
     x = 2 * x - 1
-    print("After normalization: ", x.shape, x.min(), x.max())
     return x
 
 def weights_init_orthogonal(m):
@@ -489,7 +488,7 @@ def weights_init_orthogonal(m):
     #Downsample and Upsample
 
 def init_weights(net, init_type='orthogonal'):
-    print('Initialization method [{:s}]'.format(init_type))
+    #print('Initialization method [{:s}]'.format(init_type))
     if init_type == 'orthogonal':
         net.apply(weights_init_orthogonal)
 
@@ -539,12 +538,12 @@ loss = nn.MSELoss(reduction='mean')
 
 model_path = "../trained_models/diffusion_model_1/model_1.pth"
 if os.path.isfile(model_path):
-    print("Loading checkpoint")
+    print("Loading checkpoint", flush=True)
     netG.load_network(model_path)
 else:
-    print(f"No checkpoint found at {model_path}. Starting from scratch.")
+    print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
 
-print("Starting training")
+print("Starting training", flush=True)
 for e in range(650):
     
     loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
@@ -571,9 +570,9 @@ for e in range(650):
         if False: #not i % (len(loader)//2):
             print(f"Bacth {i} of {len(loader)} batches")
 
-    netG.save_network(model_path)
+    netG.save_network("diffusion_model_test.pth")
     ftime = time.time()
-    print("Epoch {0} trained in {1:.2f}s. Average loss {2:.2f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)))
+    print("Epoch {0} trained in {1:.2f}s. Average loss {2:.2f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
 
     
 
@@ -590,4 +589,4 @@ for i,ax in zip(reversed(rng),axes.flatten()):
     ax.set_title(f"t={i}")
     ax.axis('off')
 
-plt.show()
+plt.savefig("plot.png")
