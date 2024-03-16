@@ -456,6 +456,32 @@ def augment_dataset(T21, delta, vbv, T21_lr, n=8):
     T21_lr = dataset[:,3:]
     return T21, delta, vbv, T21_lr
 
+def calculate_power_spectrum(data_x, Lpix=3, kbins=100):
+    #Simulation box variables
+    Npix = data_x.shape[0]
+    Vpix = Lpix**3
+    Lbox = Npix * Lpix
+    Vbox = Lbox**3
+
+    #Calculating wavevectors k for the simulation grid
+    kspace = np.fft.fftfreq(Npix, d=Lpix/(2*np.pi))
+    kx, ky, kz = np.meshgrid(kspace,kspace,kspace)
+    k = np.sqrt(kx**2 + ky**2 + kz**2)
+
+    #Dont need to scipy.fft.fftshift since kspace isn't fftshift'ed
+    data_k = np.fft.fftn(data_x)
+
+    #Bin k values and calculate power spectrum
+    k_bin_edges = np.geomspace(np.min(k[np.nonzero(k)]), np.max(k), endpoint=True, num=kbins+1)
+    k_vals = np.zeros(kbins)
+    P_k = np.zeros(kbins)
+    for i in range(kbins):
+        cond = ((k >= k_bin_edges[i]) & (k < k_bin_edges[i+1]))
+        k_vals[i] = (k_bin_edges[i+1] + k_bin_edges[i])/2
+        P_k[i] = (Vpix/Vbox) * Vpix * np.average(np.absolute(data_k[cond]))**2
+        
+    return k_vals, P_k
+
 def normalize(x):
     x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
     x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
@@ -536,7 +562,7 @@ netG = GaussianDiffusion(
 opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
 loss = nn.MSELoss(reduction='mean')
 
-model_path = "../trained_models/diffusion_model_1/model_1.pth"
+model_path = "diffusion_model_test.pth" #"../trained_models/diffusion_model_1/model_1.pth"
 if os.path.isfile(model_path):
     print("Loading checkpoint", flush=True)
     netG.load_network(model_path)
@@ -544,7 +570,7 @@ else:
     print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
 
 print("Starting training", flush=True)
-for e in range(650):
+for e in range(1):
     
     loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
     netG.model.train()
@@ -576,17 +602,53 @@ for e in range(650):
 
     
 
+
+T21 = T21[:1,:,:16,:16,:16]#[:1]
+delta = delta[:1,:,:16,:16,:16]#[:1]
+vbv = vbv[:1,:,:16,:16,:16]#[:1]
+T21_lr = T21_lr[:1,:,:16,:16,:16]#[:1]
+
 x_sequence = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
 
 nrows = 3
 ncols = 5
-fig,axes = plt.subplots(nrows, ncols, figsize=(nrows*4, ncols))
+
 
 rng = np.linspace(0, x_sequence.shape[1]-1, nrows*ncols, dtype=int)
 
-for i,ax in zip(reversed(rng),axes.flatten()):
+fig,axes = plt.subplots(nrows, ncols, figsize=(nrows*4, ncols))
+for i,ax in zip(rng,axes.flatten()):
     ax.imshow(x_sequence[0,i,:,:,x_sequence.shape[4]//2], vmin=-1, vmax=1)
     ax.set_title(f"t={i}")
     ax.axis('off')
 
-plt.savefig("plot.png")
+plt.savefig("diffusion_model_test.png")
+
+fig,axes = plt.subplots(2, 3, figsize=(15,10))
+
+axes[0,0].imshow(T21_lr[0,0,:,:,T21_lr.shape[4]//2], vmin=-1, vmax=1)
+axes[0,0].set_title("T21 LR (input)")
+axes[0,1].imshow(delta[0,0,:,:,delta.shape[4]//2], vmin=-1, vmax=1)
+axes[0,1].set_title("Delta (input)")
+axes[0,2].imshow(vbv[0,0,:,:,vbv.shape[4]//2], vmin=-1, vmax=1)
+axes[0,2].set_title("Vbv (input)")
+
+axes[1,0].imshow(x_sequence[0,-1,:,:,x_sequence.shape[4]//2], vmin=-1, vmax=1)
+axes[1,0].set_title("T21 SR (Generated)")
+axes[1,1].imshow(T21[0,0,:,:,T21.shape[4]//2], vmin=-1, vmax=1)
+axes[1,1].set_title("T21 HR (Real)")
+
+
+k_vals_real, P_k_real = calculate_power_spectrum(T21[0,0,:,:,:].numpy())
+dsq_real = P_k_real*k_vals_real**3/(2*np.pi**2)
+axes[1,2].plot(k_vals_real, dsq_real, label="T21 HR", ls='solid')
+
+k_vals_gen, P_k_gen = calculate_power_spectrum(x_sequence[0,-1,:,:,:].numpy())
+dsq_gen = P_k_gen*k_vals_gen**3/(2*np.pi**2)
+axes[1,2].plot(k_vals_gen, dsq_gen, label="T21 SR", ls='dashed')
+
+axes[1,2].set_yscale('log')
+axes[1,2].grid()
+axes[1,2].legend()
+
+plt.savefig("diffusion_model_sample.png")
