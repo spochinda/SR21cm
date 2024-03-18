@@ -539,8 +539,8 @@ T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T2
 delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
 vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
 T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
-    torch.nn.functional.interpolate(T21, scale_factor=0.5, mode='trilinear'),
-    scale_factor=2, mode='trilinear')
+    torch.nn.functional.interpolate(T21, scale_factor=0.25, mode='trilinear'),
+    scale_factor=4, mode='trilinear')
 T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
 
 #create dataset for torch DataLoader
@@ -559,10 +559,10 @@ netG = GaussianDiffusion(
         noise_schedule_opt=noise_schedule_opt
     )
 
-opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
+#opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
 loss = nn.MSELoss(reduction='mean')
 
-model_path = "diffusion_model_test.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+model_path = "diffusion_model_test_2.pth" #"../trained_models/diffusion_model_1/model_1.pth"
 if os.path.isfile(model_path):
     print("Loading checkpoint", flush=True)
     netG.load_network(model_path)
@@ -588,25 +588,25 @@ for e in range(1):
         
         loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise)
         
-        opt.zero_grad()
+        netG.optG.zero_grad()
         loss.backward()
-        opt.step()
+        netG.optG.step()
         
         losses.append(loss.item())
         if False: #not i % (len(loader)//2):
             print(f"Bacth {i} of {len(loader)} batches")
 
-    netG.save_network("diffusion_model_test.pth")
+    netG.save_network(model_path)
     ftime = time.time()
-    print("Epoch {0} trained in {1:.2f}s. Average loss {2:.2f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
+    print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
 
     
 
 
-T21 = T21[:1,:,:16,:16,:16]#[:1]
-delta = delta[:1,:,:16,:16,:16]#[:1]
-vbv = vbv[:1,:,:16,:16,:16]#[:1]
-T21_lr = T21_lr[:1,:,:16,:16,:16]#[:1]
+T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
+delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
+vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
+T21_lr = T21_lr[:1]#[:1,:,:16,:16,:16]#[:1]
 
 x_sequence = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
 
