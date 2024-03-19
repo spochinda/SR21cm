@@ -3,6 +3,7 @@ from utils import DataManager
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
+import time 
 
 import torch
 import torch.nn as nn
@@ -26,12 +27,12 @@ class Swish(nn.Module):
 
 #convolution class that switches between 2D and 3D convolutions
 class ConvolutionalLayer(nn.Module):
-    def __init__(self, n_channels_in, n_channels_out, kernel_size, stride, padding, dim):
+    def __init__(self, n_channels_in, n_channels_out, kernel_size, stride, padding, dim, bias = True):
         super().__init__()
         if dim == 2:
-            self.conv = nn.Conv2d(in_channels=n_channels_in, out_channels=n_channels_out, kernel_size=kernel_size, stride=stride, padding=padding)
+            self.conv = nn.Conv2d(in_channels=n_channels_in, out_channels=n_channels_out, kernel_size=kernel_size, stride=stride, padding=padding, bias = bias)
         elif dim == 3:
-            self.conv = nn.Conv3d(in_channels=n_channels_in, out_channels=n_channels_out, kernel_size=kernel_size, stride=stride, padding=padding)
+            self.conv = nn.Conv3d(in_channels=n_channels_in, out_channels=n_channels_out, kernel_size=kernel_size, stride=stride, padding=padding, bias = bias)
         else:
             raise ValueError("dim must be 2 or 3")
 
@@ -119,6 +120,47 @@ class TimeEmbedding(nn.Module):
         #
         return emb
 
+class SelfAttention(nn.Module):
+    def __init__(self, in_channel, n_head=1, norm_groups=32, dim=3):
+        super().__init__()
+
+        self.n_head = n_head
+        
+        self.indices1 = "bnc{0}, bnc{1} -> bn{2}".format(
+            "hw" if dim == 2 else "hwd",
+            "yx" if dim ==2 else "yxz", 
+            "hwyx" if dim == 2 else "hwdyxz")
+        self.indices2 = "bn{0}, bnc{1} -> bnc{2}".format(
+            "hwyx" if dim == 2 else "hwdyxz",
+            "yx" if dim ==2 else "yxz", 
+            "hw" if dim == 2 else "hwd")
+
+        self.norm = nn.GroupNorm(norm_groups, in_channel)
+        self.qkv = ConvolutionalLayer(n_channels_in=in_channel, n_channels_out=in_channel*3, kernel_size=1, stride=1, padding=0, dim=dim, bias = False)
+        self.out = ConvolutionalLayer(n_channels_in=in_channel, n_channels_out=in_channel, kernel_size=1, stride=1, padding=0, dim=dim, bias = True)
+
+    def forward(self, input):
+        #print("Executing attention block")
+        batch, channel,(*d) = input.shape
+        n_head = self.n_head
+        head_dim = channel // n_head
+
+        norm = self.norm(input)
+        qkv = self.qkv(norm).view(batch, n_head, head_dim * 3, *d)
+        query, key, value = qkv.chunk(3, dim=2)  # bhdyx
+        
+        attn = torch.einsum(
+            self.indices1, query, key
+        ).contiguous() / np.sqrt(channel)
+        attn = attn.view(batch, n_head, *d, -1)
+        attn = torch.softmax(attn, -1)
+        attn = attn.view(batch, n_head, *d, *d)
+        
+        out = torch.einsum(self.indices2, attn, value).contiguous()
+        out = self.out(out.view(batch, channel, *d))
+
+        return out + input
+
 class ResnetBlock(nn.Module):
     def __init__(self, n_channels_in, n_channels_out, time_channels, norm_groups = 32, dropout = 0, with_attn=False, dim=2):#, use_affine_level=False
         """
@@ -168,7 +210,7 @@ class ResnetBlock(nn.Module):
             self.shortcut = nn.Identity()
 
         if with_attn:
-            self.attn = nn.Identity() #SelfAttention
+            self.attn = SelfAttention(n_channels_out, norm_groups=norm_groups)
         else:
             self.attn = nn.Identity()
     
@@ -192,10 +234,11 @@ class UNet(nn.Module):
         inner_channel=32,
         norm_groups=32,
         channel_mults=(1, 2, 4, 8, 8),
-        #attn_res=(8),
+        attn_res=(8,),
         res_blocks=3,
         dropout = 0, 
-        with_attn=False, 
+        with_attn=False,
+        image_size=128, 
         dim=2
         ):
         super().__init__()
@@ -208,29 +251,29 @@ class UNet(nn.Module):
         num_mults = len(channel_mults)
         pre_channel = inner_channel
         feat_channels = [pre_channel]
-        #now_res = image_size
+        now_res = image_size if with_attn else False
         downs = [ConvolutionalLayer(n_channels_in=in_channel, n_channels_out=inner_channel, kernel_size=3, stride=1, padding=1, dim=dim)]
         for ind in range(num_mults):
             is_last = (ind == num_mults - 1)
-            #use_attn = (now_res in attn_res)
+            use_attn = (now_res in attn_res)
             channel_mult = inner_channel * channel_mults[ind]
             for _ in range(0, res_blocks):
                 downs.append(ResnetBlock(
-                    n_channels_in=pre_channel, n_channels_out=channel_mult, time_channels=inner_channel, norm_groups=norm_groups, dropout=dropout, with_attn=with_attn, dim=dim))
+                    n_channels_in=pre_channel, n_channels_out=channel_mult, time_channels=inner_channel, norm_groups=norm_groups, dropout=dropout, with_attn=use_attn, dim=dim))
                 feat_channels.append(channel_mult)
                 pre_channel = channel_mult
             if not is_last:
                 downs.append(Downsample(pre_channel, dim=dim))
                 feat_channels.append(pre_channel)
-                #now_res = now_res//2
+                now_res = now_res//2
         self.downs = nn.ModuleList(downs)
 
 
         self.mid = nn.ModuleList([
             ResnetBlock(n_channels_in=pre_channel, n_channels_out=pre_channel, time_channels=inner_channel, norm_groups=norm_groups,
-                        dropout=dropout, with_attn=with_attn, dim=dim),
+                        dropout=dropout, with_attn=use_attn, dim=dim),
             ResnetBlock(n_channels_in=pre_channel, n_channels_out=pre_channel, time_channels=inner_channel, norm_groups=norm_groups, 
-                        dropout=dropout, with_attn=with_attn, dim=dim)
+                        dropout=dropout, with_attn=use_attn, dim=dim)
             #ResnetBlocWithAttn(pre_channel, pre_channel, noise_level_emb_dim=noise_level_channel, norm_groups=norm_groups,
             #                   dropout=dropout, with_attn=True),
             #ResnetBlocWithAttn(pre_channel, pre_channel, noise_level_emb_dim=noise_level_channel, norm_groups=norm_groups,
@@ -241,17 +284,17 @@ class UNet(nn.Module):
 
         for ind in reversed(range(num_mults)):
             is_last = (ind < 1)
-            #use_attn = (now_res in attn_res)
+            use_attn = (now_res in attn_res)
             channel_mult = inner_channel * channel_mults[ind]
             for _ in range(0, res_blocks+1):
                 ups.append(
-                    ResnetBlock(n_channels_in=pre_channel+feat_channels.pop(), n_channels_out=channel_mult, time_channels=inner_channel, norm_groups=norm_groups, dropout=dropout, with_attn=with_attn, dim=dim)
+                    ResnetBlock(n_channels_in=pre_channel+feat_channels.pop(), n_channels_out=channel_mult, time_channels=inner_channel, norm_groups=norm_groups, dropout=dropout, with_attn=use_attn, dim=dim)
                     #ResnetBlocWithAttn(pre_channel+feat_channels.pop(), channel_mult, noise_level_emb_dim=noise_level_channel, norm_groups=norm_groups,dropout=dropout, with_attn=use_attn)
                 )
                 pre_channel = channel_mult
             if not is_last:
                 ups.append(Upsample(pre_channel, dim=dim))
-                #now_res = now_res*2
+                now_res = now_res*2
 
         self.ups = nn.ModuleList(ups)
         
@@ -266,7 +309,7 @@ class UNet(nn.Module):
         feats = []
         for layer in self.downs:
             if isinstance(layer, ResnetBlock):
-                #print("HERE: ", layer)
+                print("Downs shape: ", x.shape)
                 x = layer(x, t)
             else:
                 x = layer(x)
@@ -274,12 +317,14 @@ class UNet(nn.Module):
 
         for layer in self.mid:
             if isinstance(layer, ResnetBlock):
+                print("Mids shape: ", x.shape)
                 x = layer(x, t)
             else:
                 x = layer(x)
 
         for layer in self.ups:
             if isinstance(layer, ResnetBlock):
+                print("Ups shape: ", x.shape)
                 f = feats.pop()
                 x = layer(torch.cat((x, f), dim=1), t)
             else:
@@ -346,7 +391,7 @@ class GaussianDiffusion(nn.Module):
 
     def q_sample(self, x0, t, noise=None): #forward diffusion
         #"t and batch number dim should be the same"
-        b,(*d) = T21.shape
+        b,(*d) = x0.shape
         t=torch.tensor(t).view(b,*[1]*len(d))
         noise = torch.randn_like(x0) if noise==None else noise
         x_t = torch.sqrt(self.alphas_cumprod[t]) * x0 + torch.sqrt(1 - self.alphas_cumprod[t]) * noise
@@ -399,7 +444,6 @@ class GaussianDiffusion(nn.Module):
 
 
 
-import time 
 
 def rot_onto_sides_torch(x):
     x1 = torch.rot90(x, k=1, dims=(3,4)).unsqueeze(0)
@@ -518,8 +562,9 @@ def init_weights(net, init_type='orthogonal'):
     if init_type == 'orthogonal':
         net.apply(weights_init_orthogonal)
 
-path = os.getcwd()
-Data = DataManager(path.split('/models')[0], redshifts=[10,], IC_seeds=list(range(1000,1008)))
+path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
+
+Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
 T21, delta, vbv = Data.load()
 
 #convert to pytorch
@@ -534,7 +579,7 @@ delta = delta.unsqueeze(1)
 vbv = vbv.unsqueeze(1)
 
 
-reduce_dim = 4
+reduce_dim = 2
 T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
 delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
 vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
@@ -548,21 +593,29 @@ dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
 
 #optimizer and model
 model = UNet
-model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), res_blocks=2, dropout = 0, with_attn=False, dim=3)
+model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=T21.shape[-1], dim=3)
 noise_schedule_opt = dict(timesteps = 1000, s = 0.008)
 
 netG = GaussianDiffusion(
-        model=UNet,
+        model=model,
         model_opt=model_opt,
         loss_type='l1',
         noise_schedule=cosine_beta_schedule,
         noise_schedule_opt=noise_schedule_opt
     )
 
+###3D test
+#ts = torch.randint(low = 1, high = netG.timesteps, size = (4, ))
+#alphas_cumprod = netG.alphas_cumprod[ts]
+#xt, target_noise = netG.q_sample(T21[:4], ts)
+#X = torch.cat([xt, delta[:4], vbv[:4], T21_lr[:4]], dim = 1)
+#predicted_noise = netG.model(X, alphas_cumprod)
+
+
 #opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
 loss = nn.MSELoss(reduction='mean')
 
-model_path = "diffusion_model_test_2.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+model_path = path + "trained_models/diffusion_model_test_3.pth" #"../trained_models/diffusion_model_1/model_1.pth"
 if os.path.isfile(model_path):
     print("Loading checkpoint", flush=True)
     netG.load_network(model_path)
@@ -570,7 +623,7 @@ else:
     print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
 
 print("Starting training", flush=True)
-for e in range(1):
+for e in range(600):
     
     loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
     netG.model.train()
