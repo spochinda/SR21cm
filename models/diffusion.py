@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
 from math import log
+from torch_ema import ExponentialMovingAverage
 
 device = (
     "cuda"
@@ -359,12 +360,13 @@ class GaussianDiffusion(nn.Module):
         model_opt,
         loss_type='l1',
         noise_schedule=None,
-        noise_schedule_opt=None
+        noise_schedule_opt=None,
+        learning_rate=1e-4,
     ):
         super().__init__()
         self.model = model(**model_opt)
         #self.model_opt = model_opt
-        self.optG = torch.optim.Adam(self.model.parameters(), lr = 1e-3)
+        self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
         self.loss_type = loss_type
         self.noise_schedule = noise_schedule
         self.noise_schedule_opt = noise_schedule_opt
@@ -619,7 +621,8 @@ if __name__ == "__main__":
             model_opt=model_opt,
             loss_type='l1',
             noise_schedule=linear_beta_schedule,#cosine_beta_schedule,
-            noise_schedule_opt=noise_schedule_opt
+            noise_schedule_opt=noise_schedule_opt,
+            learning_rate=1e-4
         )
 
     ###3D test
@@ -630,15 +633,17 @@ if __name__ == "__main__":
     #predicted_noise = netG.model(X, alphas_cumprod)
 
 
-    #opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
-    loss = nn.MSELoss(reduction='mean')
-
-    model_path = path + "/trained_models/diffusion_model_test_4.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+    model_path = path + "/trained_models/diffusion_model_test_5.pth" #"../trained_models/diffusion_model_1/model_1.pth"
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
         netG.load_network(model_path)
     else:
         print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
+
+    ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
+    #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
+
+    loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
     for e in range(400):
@@ -662,6 +667,8 @@ if __name__ == "__main__":
             netG.optG.zero_grad()
             loss.backward()
             netG.optG.step()
+            #Update netG.model with exponential moving average
+            ema.update()
             
             losses.append(loss.item())
             if False: #not i % (len(loader)//2):
