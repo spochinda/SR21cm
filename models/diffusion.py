@@ -1,5 +1,4 @@
 import os
-from utils import DataManager
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -431,6 +430,22 @@ class GaussianDiffusion(nn.Module):
             return x_sequence
         else:
             return x_sequence[:,-1]
+    
+    def p_sample_loop_2d_slices(self, conditionals=None, continous=False):
+        #sample_inter = (1 | (self.timesteps//100))
+        b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
+        x_t = torch.randn((b,*d))
+        
+        x_sequence = x_t[:,:,:,:,d[-1]//2] #use channel dimension as time axis and just save 2d slices
+
+        for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
+            x_t = self.p_sample(x_t, b*[t], conditionals=conditionals)
+            #if t % sample_inter == 0:
+            x_sequence = torch.cat([x_sequence, x_t[:,:,:,:,d[-1]//2]], dim=1)
+        if continous:
+            return x_sequence
+        else:
+            return x_sequence[:,-1]
         
     def save_network(self, path):
         torch.save(
@@ -562,145 +577,148 @@ def init_weights(net, init_type='orthogonal'):
     if init_type == 'orthogonal':
         net.apply(weights_init_orthogonal)
 
-path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
+if __name__ == "__main__":
+    from utils import DataManager
 
-Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
-T21, delta, vbv = Data.load()
+    path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
 
-#convert to pytorch
-T21 = torch.from_numpy(T21)
-delta = torch.from_numpy(delta)
-vbv = torch.from_numpy(vbv)
+    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
+    T21, delta, vbv = Data.load()
 
-#convert from 8,128,128,128,1 to 8,1,128,128,128
-T21 = T21.permute(0,4,1,2,3)
-#Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
-delta = delta.unsqueeze(1)
-vbv = vbv.unsqueeze(1)
+    #convert to pytorch
+    T21 = torch.from_numpy(T21)
+    delta = torch.from_numpy(delta)
+    vbv = torch.from_numpy(vbv)
 
-
-reduce_dim = 2
-T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
-delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
-vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
-T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
-    torch.nn.functional.interpolate(T21, scale_factor=0.25, mode='trilinear'),
-    scale_factor=4, mode='trilinear')
-T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
-
-#create dataset for torch DataLoader
-dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-
-#optimizer and model
-model = UNet
-model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=T21.shape[-1], dim=3)
-noise_schedule_opt = dict(timesteps = 1000, s = 0.008)
-
-netG = GaussianDiffusion(
-        model=model,
-        model_opt=model_opt,
-        loss_type='l1',
-        noise_schedule=cosine_beta_schedule,
-        noise_schedule_opt=noise_schedule_opt
-    )
-
-###3D test
-#ts = torch.randint(low = 1, high = netG.timesteps, size = (4, ))
-#alphas_cumprod = netG.alphas_cumprod[ts]
-#xt, target_noise = netG.q_sample(T21[:4], ts)
-#X = torch.cat([xt, delta[:4], vbv[:4], T21_lr[:4]], dim = 1)
-#predicted_noise = netG.model(X, alphas_cumprod)
+    #convert from 8,128,128,128,1 to 8,1,128,128,128
+    T21 = T21.permute(0,4,1,2,3)
+    #Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
+    delta = delta.unsqueeze(1)
+    vbv = vbv.unsqueeze(1)
 
 
-#opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
-loss = nn.MSELoss(reduction='mean')
+    reduce_dim = 4
+    T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
+    delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
+    vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
+    T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
+        torch.nn.functional.interpolate(T21, scale_factor=0.25, mode='trilinear'),
+        scale_factor=4, mode='trilinear')
+    T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
 
-model_path = path + "/trained_models/diffusion_model_test_3.pth" #"../trained_models/diffusion_model_1/model_1.pth"
-if os.path.isfile(model_path):
-    print("Loading checkpoint", flush=True)
-    netG.load_network(model_path)
-else:
-    print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
+    #create dataset for torch DataLoader
+    dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
 
-print("Starting training", flush=True)
-for e in range(600):
-    
-    loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
-    netG.model.train()
-    
-    losses = []
-    stime = time.time()
-    for i,(T21,delta,vbv, T21_lr) in enumerate(loader):
-        ts = torch.randint(low = 1, high = netG.timesteps, size = (loader.batch_size, ))
-        alphas_cumprod = netG.alphas_cumprod[ts]
+    #optimizer and model
+    model = UNet
+    model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=T21.shape[-1], dim=3)
+    noise_schedule_opt = dict(timesteps = 1000, beta_start = 0.0001, beta_end = 0.02) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
 
-        xt, target_noise = netG.q_sample(T21, ts)
-        X = torch.cat([xt, delta, vbv, T21_lr], dim = 1)
+    netG = GaussianDiffusion(
+            model=model,
+            model_opt=model_opt,
+            loss_type='l1',
+            noise_schedule=linear_beta_schedule,#cosine_beta_schedule,
+            noise_schedule_opt=noise_schedule_opt
+        )
+
+    ###3D test
+    #ts = torch.randint(low = 1, high = netG.timesteps, size = (4, ))
+    #alphas_cumprod = netG.alphas_cumprod[ts]
+    #xt, target_noise = netG.q_sample(T21[:4], ts)
+    #X = torch.cat([xt, delta[:4], vbv[:4], T21_lr[:4]], dim = 1)
+    #predicted_noise = netG.model(X, alphas_cumprod)
+
+
+    #opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
+    loss = nn.MSELoss(reduction='mean')
+
+    model_path = path + "/trained_models/diffusion_model_test_4.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+    if os.path.isfile(model_path):
+        print("Loading checkpoint", flush=True)
+        netG.load_network(model_path)
+    else:
+        print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
+
+    print("Starting training", flush=True)
+    for e in range(400):
         
-        predicted_noise = netG.model(X, alphas_cumprod)
+        loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
+        netG.model.train()
         
-        loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise)
-        
-        netG.optG.zero_grad()
-        loss.backward()
-        netG.optG.step()
-        
-        losses.append(loss.item())
-        if False: #not i % (len(loader)//2):
-            print(f"Bacth {i} of {len(loader)} batches")
+        losses = []
+        stime = time.time()
+        for i,(T21,delta,vbv, T21_lr) in enumerate(loader):
+            ts = torch.randint(low = 1, high = netG.timesteps, size = (loader.batch_size, ))
+            alphas_cumprod = netG.alphas_cumprod[ts]
 
-    netG.save_network(model_path)
-    ftime = time.time()
-    print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
+            xt, target_noise = netG.q_sample(T21, ts)
+            X = torch.cat([xt, delta, vbv, T21_lr], dim = 1)
+            
+            predicted_noise = netG.model(X, alphas_cumprod)
+            
+            loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise)
+            
+            netG.optG.zero_grad()
+            loss.backward()
+            netG.optG.step()
+            
+            losses.append(loss.item())
+            if False: #not i % (len(loader)//2):
+                print(f"Bacth {i} of {len(loader)} batches")
 
-
-
-T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
-delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
-vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
-T21_lr = T21_lr[:1]#[:1,:,:16,:16,:16]#[:1]
-
-x_sequence = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
-
-nrows = 3
-ncols = 5
-
-
-rng = np.linspace(0, x_sequence.shape[1]-1, nrows*ncols, dtype=int)
-
-fig,axes = plt.subplots(nrows, ncols, figsize=(nrows*4, ncols))
-for i,ax in zip(rng,axes.flatten()):
-    ax.imshow(x_sequence[0,i,:,:,x_sequence.shape[4]//2], vmin=-1, vmax=1)
-    ax.set_title(f"t={i}")
-    ax.axis('off')
-
-plt.savefig(path + "/trained_models/diffusion_model_test.png")
-
-fig,axes = plt.subplots(2, 3, figsize=(15,10))
-
-axes[0,0].imshow(T21_lr[0,0,:,:,T21_lr.shape[4]//2], vmin=-1, vmax=1)
-axes[0,0].set_title("T21 LR (input)")
-axes[0,1].imshow(delta[0,0,:,:,delta.shape[4]//2], vmin=-1, vmax=1)
-axes[0,1].set_title("Delta (input)")
-axes[0,2].imshow(vbv[0,0,:,:,vbv.shape[4]//2], vmin=-1, vmax=1)
-axes[0,2].set_title("Vbv (input)")
-
-axes[1,0].imshow(x_sequence[0,-1,:,:,x_sequence.shape[4]//2], vmin=-1, vmax=1)
-axes[1,0].set_title("T21 SR (Generated)")
-axes[1,1].imshow(T21[0,0,:,:,T21.shape[4]//2], vmin=-1, vmax=1)
-axes[1,1].set_title("T21 HR (Real)")
+        netG.save_network(model_path)
+        ftime = time.time()
+        print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
 
 
-k_vals_real, P_k_real = calculate_power_spectrum(T21[0,0,:,:,:].numpy())
-dsq_real = P_k_real*k_vals_real**3/(2*np.pi**2)
-axes[1,2].plot(k_vals_real, dsq_real, label="T21 HR", ls='solid')
 
-k_vals_gen, P_k_gen = calculate_power_spectrum(x_sequence[0,-1,:,:,:].numpy())
-dsq_gen = P_k_gen*k_vals_gen**3/(2*np.pi**2)
-axes[1,2].plot(k_vals_gen, dsq_gen, label="T21 SR", ls='dashed')
+    T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
+    delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
+    vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
+    T21_lr = T21_lr[:1]#[:1,:,:16,:16,:16]#[:1]
 
-axes[1,2].set_yscale('log')
-axes[1,2].grid()
-axes[1,2].legend()
+    x_sequence = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
 
-plt.savefig(path + "/trained_models/diffusion_model_sample.png")
+    nrows = 3
+    ncols = 5
+
+
+    rng = np.linspace(0, x_sequence.shape[1]-1, nrows*ncols, dtype=int)
+
+    fig,axes = plt.subplots(nrows, ncols, figsize=(nrows*4, ncols))
+    for i,ax in zip(rng,axes.flatten()):
+        ax.imshow(x_sequence[0,i,:,:,x_sequence.shape[4]//2], vmin=-1, vmax=1)
+        ax.set_title(f"t={i}")
+        ax.axis('off')
+
+    plt.savefig(path + "/trained_models/diffusion_model_test.png")
+
+    fig,axes = plt.subplots(2, 3, figsize=(15,10))
+
+    axes[0,0].imshow(T21_lr[0,0,:,:,T21_lr.shape[4]//2], vmin=-1, vmax=1)
+    axes[0,0].set_title("T21 LR (input)")
+    axes[0,1].imshow(delta[0,0,:,:,delta.shape[4]//2], vmin=-1, vmax=1)
+    axes[0,1].set_title("Delta (input)")
+    axes[0,2].imshow(vbv[0,0,:,:,vbv.shape[4]//2], vmin=-1, vmax=1)
+    axes[0,2].set_title("Vbv (input)")
+
+    axes[1,0].imshow(x_sequence[0,-1,:,:,x_sequence.shape[4]//2], vmin=-1, vmax=1)
+    axes[1,0].set_title("T21 SR (Generated)")
+    axes[1,1].imshow(T21[0,0,:,:,T21.shape[4]//2], vmin=-1, vmax=1)
+    axes[1,1].set_title("T21 HR (Real)")
+
+
+    k_vals_real, P_k_real = calculate_power_spectrum(T21[0,0,:,:,:].numpy())
+    dsq_real = P_k_real*k_vals_real**3/(2*np.pi**2)
+    axes[1,2].plot(k_vals_real, dsq_real, label="T21 HR", ls='solid')
+
+    k_vals_gen, P_k_gen = calculate_power_spectrum(x_sequence[0,-1,:,:,:].numpy())
+    dsq_gen = P_k_gen*k_vals_gen**3/(2*np.pi**2)
+    axes[1,2].plot(k_vals_gen, dsq_gen, label="T21 SR", ls='dashed')
+
+    axes[1,2].set_yscale('log')
+    axes[1,2].grid()
+    axes[1,2].legend()
+
+    plt.savefig(path + "/trained_models/diffusion_model_sample.png")
