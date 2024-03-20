@@ -309,7 +309,7 @@ class UNet(nn.Module):
         feats = []
         for layer in self.downs:
             if isinstance(layer, ResnetBlock):
-                print("Downs shape: ", x.shape)
+                #print("Downs shape: ", x.shape)
                 x = layer(x, t)
             else:
                 x = layer(x)
@@ -317,14 +317,14 @@ class UNet(nn.Module):
 
         for layer in self.mid:
             if isinstance(layer, ResnetBlock):
-                print("Mids shape: ", x.shape)
+                #print("Mids shape: ", x.shape)
                 x = layer(x, t)
             else:
                 x = layer(x)
 
         for layer in self.ups:
             if isinstance(layer, ResnetBlock):
-                print("Ups shape: ", x.shape)
+                #print("Ups shape: ", x.shape)
                 f = feats.pop()
                 x = layer(torch.cat((x, f), dim=1), t)
             else:
@@ -615,7 +615,7 @@ netG = GaussianDiffusion(
 #opt = torch.optim.Adam(netG.model.parameters(), lr = 1e-3)
 loss = nn.MSELoss(reduction='mean')
 
-model_path = path + "trained_models/diffusion_model_test_3.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+model_path = path + "/trained_models/diffusion_model_test_3.pth" #"../trained_models/diffusion_model_1/model_1.pth"
 if os.path.isfile(model_path):
     print("Loading checkpoint", flush=True)
     netG.load_network(model_path)
@@ -675,7 +675,7 @@ for i,ax in zip(rng,axes.flatten()):
     ax.set_title(f"t={i}")
     ax.axis('off')
 
-plt.savefig("diffusion_model_test.png")
+plt.savefig(path + "/diffusion_model_test.png")
 
 fig,axes = plt.subplots(2, 3, figsize=(15,10))
 
