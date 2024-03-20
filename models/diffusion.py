@@ -653,7 +653,6 @@ for e in range(600):
     ftime = time.time()
     print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
 
-    
 
 
 T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
@@ -675,7 +674,7 @@ for i,ax in zip(rng,axes.flatten()):
     ax.set_title(f"t={i}")
     ax.axis('off')
 
-plt.savefig(path + "/diffusion_model_test.png")
+plt.savefig(path + "/trained_models/diffusion_model_test.png")
 
 fig,axes = plt.subplots(2, 3, figsize=(15,10))
 
@@ -704,4 +703,4 @@ axes[1,2].set_yscale('log')
 axes[1,2].grid()
 axes[1,2].legend()
 
-plt.savefig("diffusion_model_sample.png")
+plt.savefig(path + "/trained_models/diffusion_model_sample.png")
