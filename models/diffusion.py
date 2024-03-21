@@ -417,7 +417,7 @@ class GaussianDiffusion(nn.Module):
                 noise[i] = torch.zeros_like(x)
             else:
                 noise[i] = torch.randn_like(x)
-        return posterior_mean + noise * self.posterior_variance[t]
+        return posterior_mean + noise * self.posterior_variance[t], noise
 
     @torch.no_grad()
     def p_sample_loop(self, conditionals=None, continous=False):
@@ -427,11 +427,11 @@ class GaussianDiffusion(nn.Module):
         x_sequence = x_t #use channel dimension as time axis
 
         for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
-            x_t = self.p_sample(x_t, b*[t], conditionals=conditionals)
+            x_t, noise = self.p_sample(x_t, b*[t], conditionals=conditionals)
             if t % sample_inter == 0:
                 x_sequence = torch.cat([x_sequence, x_t], dim=1)
         if continous:
-            return x_sequence
+            return x_sequence, noise
         else:
             return x_sequence[:,-1]
     
@@ -641,10 +641,10 @@ if __name__ == "__main__":
     #X = torch.cat([xt, delta[:4], vbv[:4], T21_lr[:4]], dim = 1)
     #predicted_noise = netG.model(X, alphas_cumprod)
 
-    ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
+    #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
 
-    model_path = path + "/trained_models/diffusion_model_test_7.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+    model_path = path + "/trained_models/diffusion_model_test_8.pth" #"../trained_models/diffusion_model_1/model_1.pth"
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
         netG.load_network(model_path)
@@ -652,11 +652,11 @@ if __name__ == "__main__":
         print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
 
     
-    """
+    
     loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
-    for e in range(100000):
+    for e in range(400):
         
         loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
         netG.model.train()
@@ -664,7 +664,7 @@ if __name__ == "__main__":
         losses = []
         stime = time.time()
         for i,(T21,delta,vbv, T21_lr) in enumerate(loader):
-            ts = torch.randint(low = 1, high = netG.timesteps, size = (loader.batch_size, ))
+            ts = torch.randint(low = 0, high = netG.timesteps, size = (loader.batch_size, ))
             alphas_cumprod = netG.alphas_cumprod[ts]
 
             xt, target_noise = netG.q_sample(T21, ts)
@@ -695,7 +695,7 @@ if __name__ == "__main__":
         print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches. Saved: {4}".format(e, ftime - stime, losses_epoch, len(loader), save_bool),flush=True)
 
     print("Losses:\n", netG.loss, "\n", flush=True)
-    """
+    
     T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
     delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
     vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
