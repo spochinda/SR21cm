@@ -367,6 +367,8 @@ class GaussianDiffusion(nn.Module):
         self.model = model(**model_opt)
         #self.model_opt = model_opt
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
+        self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.995)
+        self.loss = []
         self.loss_type = loss_type
         self.noise_schedule = noise_schedule
         self.noise_schedule_opt = noise_schedule_opt
@@ -451,13 +453,20 @@ class GaussianDiffusion(nn.Module):
         
     def save_network(self, path):
         torch.save(
-            obj = dict(model = self.model.state_dict(), optimizer = self.optG.state_dict()),# epoch = e ),
-            f = path
-        )
+            obj = dict(
+                model = self.model.state_dict(), 
+                optimizer = self.optG.state_dict(),# epoch = e ),
+                ema = self.ema.state_dict(),
+                loss = self.loss),
+                f = path
+                )
 
     def load_network(self, path):
-        self.model.load_state_dict(torch.load(path)['model'])
-        self.optG.load_state_dict(torch.load(path)['optimizer'])
+        loaded_state = torch.load(path)
+        self.model.load_state_dict(loaded_state['model'])
+        self.optG.load_state_dict(loaded_state['optimizer'])
+        self.ema.load_state_dict(loaded_state['ema'])
+        self.loss = loaded_state['loss']
 
 
 
@@ -584,7 +593,7 @@ if __name__ == "__main__":
 
     path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
 
-    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
+    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1010,1011)))
     T21, delta, vbv = Data.load()
 
     #convert to pytorch
@@ -599,21 +608,21 @@ if __name__ == "__main__":
     vbv = vbv.unsqueeze(1)
 
 
-    reduce_dim = 4
+    reduce_dim = 2
     T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
     delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
     vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
     T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
         torch.nn.functional.interpolate(T21, scale_factor=0.25, mode='trilinear'),
         scale_factor=4, mode='trilinear')
-    T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
+    #T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
 
     #create dataset for torch DataLoader
     dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
 
     #optimizer and model
     model = UNet
-    model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=T21.shape[-1], dim=3)
+    model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)#T21.shape[-1], dim=3)
     noise_schedule_opt = dict(timesteps = 1000, beta_start = 0.0001, beta_end = 0.02) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
 
     netG = GaussianDiffusion(
@@ -632,21 +641,22 @@ if __name__ == "__main__":
     #X = torch.cat([xt, delta[:4], vbv[:4], T21_lr[:4]], dim = 1)
     #predicted_noise = netG.model(X, alphas_cumprod)
 
+    ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
+    #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
 
-    model_path = path + "/trained_models/diffusion_model_test_5.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+    model_path = path + "/trained_models/diffusion_model_test_7.pth" #"../trained_models/diffusion_model_1/model_1.pth"
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
         netG.load_network(model_path)
     else:
         print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
 
-    ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
-    #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-
+    
+    """
     loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
-    for e in range(400):
+    for e in range(100000):
         
         loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
         netG.model.train()
@@ -666,20 +676,26 @@ if __name__ == "__main__":
             
             netG.optG.zero_grad()
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
             netG.optG.step()
             #Update netG.model with exponential moving average
-            ema.update()
+            netG.ema.update()
             
             losses.append(loss.item())
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
-
-        netG.save_network(model_path)
+        
+        losses_epoch = np.mean(losses)
+        netG.loss.append(losses_epoch)
+        save_bool = losses_epoch == np.min(netG.loss)
+        if save_bool:
+            
+            netG.save_network(model_path)
         ftime = time.time()
-        print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches".format(e, ftime - stime, np.mean(losses), len(loader)),flush=True)
+        print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches. Saved: {4}".format(e, ftime - stime, losses_epoch, len(loader), save_bool),flush=True)
 
-
-
+    print("Losses:\n", netG.loss, "\n", flush=True)
+    """
     T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
     delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
     vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
@@ -699,7 +715,7 @@ if __name__ == "__main__":
         ax.set_title(f"t={i}")
         ax.axis('off')
 
-    plt.savefig(path + "/trained_models/diffusion_model_test.png")
+    plt.savefig(path + "/trained_models/diffusion_model_test_7.png")
 
     fig,axes = plt.subplots(2, 3, figsize=(15,10))
 
@@ -728,4 +744,4 @@ if __name__ == "__main__":
     axes[1,2].grid()
     axes[1,2].legend()
 
-    plt.savefig(path + "/trained_models/diffusion_model_sample.png")
+    plt.savefig(path + "/trained_models/diffusion_model_sample_7.png")
