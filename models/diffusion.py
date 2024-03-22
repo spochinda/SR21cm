@@ -639,7 +639,7 @@ if __name__ == "__main__":
     vbv = vbv.unsqueeze(1)
 
 
-    reduce_dim = 8#4
+    reduce_dim = 4#4
     T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
     delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
     vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
@@ -655,7 +655,7 @@ if __name__ == "__main__":
     #optimizer and model
     model = UNet
     model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)#T21.shape[-1], dim=3)
-    noise_schedule_opt = dict(timesteps = 1000, beta_start = 0.0001, beta_end = 0.02) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
+    noise_schedule_opt = dict(timesteps = 2000, beta_start = 1e-6, beta_end = 1e-2) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
 
     netG = GaussianDiffusion(
             model=model,
@@ -675,8 +675,8 @@ if __name__ == "__main__":
 
     #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-
-    model_path = path + "/trained_models/diffusion_model_test_8.pth" #"../trained_models/diffusion_model_1/model_1.pth"
+    model_i = "9"
+    model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
         netG.load_network(model_path)
@@ -688,7 +688,7 @@ if __name__ == "__main__":
     loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
-    for e in range(1):
+    for e in range(400):
         
         loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
         netG.model.train()
@@ -718,18 +718,19 @@ if __name__ == "__main__":
             losses.append(loss.item())
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
-        if False:#e==0:
+        if e==0:
             #print("print model train: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
+            j = ts.argmin().item()
             fig,ax = plt.subplots(1,3, figsize=(15,5))
-            ax[0].imshow(predicted_noise[0,0,:,:,predicted_noise.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
-            ax[0].set_title("Predicted noise, time={0}, \nnoise min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[0], predicted_noise.min().item(), predicted_noise.max().item(), predicted_noise.mean().item(), predicted_noise.std().item()))
-            ax[1].imshow(target_noise[0,0,:,:,target_noise.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
-            ax[1].set_title("Target noise, time={0}, \nnoise min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[0], target_noise.min().item(), target_noise.max().item(), target_noise.mean().item(), target_noise.std().item()))
+            ax[0].imshow(predicted_noise[j,0,:,:,predicted_noise.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
+            ax[0].set_title("Predicted noise, time={0}, \nnoise min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[j], predicted_noise.min().item(), predicted_noise.max().item(), predicted_noise.mean().item(), predicted_noise.std().item()))
+            ax[1].imshow(target_noise[j,0,:,:,target_noise.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
+            ax[1].set_title("Target noise, time={0}, \nnoise min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[j], target_noise.min().item(), target_noise.max().item(), target_noise.mean().item(), target_noise.std().item()))
             #residual
             residual = predicted_noise - target_noise
-            ax[2].imshow(residual[0,0,:,:,residual.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
-            ax[2].set_title("Residual, time={0}, \nresidual min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[0], residual.min().item(), residual.max().item(), residual.mean().item(), residual.std().item()))
-            #plt.show()
+            ax[2].imshow(residual[j,0,:,:,residual.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
+            ax[2].set_title("Residual, time={0}, \nresidual min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[j], residual.min().item(), residual.max().item(), residual.mean().item(), residual.std().item()))
+            plt.savefig(path + "/trained_models/diffusion_model_intraining_{0}.png".format(model_i))
 
         
         losses_epoch = np.mean(losses)
@@ -765,7 +766,7 @@ if __name__ == "__main__":
         ax.set_title(f"t={i}")
         ax.axis('off')
 
-    #plt.savefig(path + "/trained_models/diffusion_model_test_8.png")
+    plt.savefig(path + "/trained_models/diffusion_model_{0}.png".format(model_i))
 
     fig,axes = plt.subplots(2, 3, figsize=(15,10))
 
@@ -794,20 +795,20 @@ if __name__ == "__main__":
     axes[1,2].grid()
     axes[1,2].legend()
 
-    #plt.savefig(path + "/trained_models/diffusion_model_sample_8.png")
+    plt.savefig(path + "/trained_models/diffusion_model_sample_{0}.png".format(model_i))
 
-t = np.arange(999)[np.arange(999)%(1000//10)==0]
-ts = torch.tensor(t)
-xt, target_noise = netG.q_sample(T21[:1].repeat(len(t),1,1,1,1), ts)
+    t = np.arange(999)[np.arange(999)%(1000//10)==0]
+    tss = torch.tensor(t)
+    xt, target_noise = netG.q_sample(T21[:1].repeat(len(t),1,1,1,1), tss)
 
-fig,axes = plt.subplots(2,10, figsize=(50,10))
+    fig,axes = plt.subplots(2,10, figsize=(50,10))
 
-for i,(ax0,ax1) in enumerate(zip(axes[0,:], axes[1,:])):
-    #ax0.imshow(target[0,:,:,target.shape[3]//2], vmin=-1, vmax=1)
-    ax0.imshow(noise[0,i,:,:,noise.shape[4]//2], vmin=-1, vmax=1)
-    ax0.set_title(f"t={t[-i-1]} " + "target" if i==0 else f"t={t[-i-1]}")
-    ax1.imshow(pred_noises[0,i,:,:,pred_noises.shape[4]//2], vmin=-1, vmax=1)
-plt.savefig(path + "/trained_models/diffusion_model_noise_8.png")
+    for i,(ax0,ax1) in enumerate(zip(axes[0,:], axes[1,:])):
+        #ax0.imshow(target[0,:,:,target.shape[3]//2], vmin=-1, vmax=1)
+        ax0.imshow(noise[0,i,:,:,noise.shape[4]//2], vmin=-1, vmax=1)
+        ax0.set_title(f"t={t[-i-1]} " + "target" if i==0 else f"t={t[-i-1]}")
+        ax1.imshow(pred_noises[0,i,:,:,pred_noises.shape[4]//2], vmin=-1, vmax=1)
+    plt.savefig(path + "/trained_models/diffusion_model_noise_{0}.png".format(model_i))
 
 #plt.show()
     
