@@ -584,11 +584,25 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100):
     return k_vals, P_k
 
 def normalize(x):
+    print("x shape: ", x.shape)
     x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
     x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
     x = (x - x_min) / (x_max - x_min)
     x = 2 * x - 1
     return x
+
+def get_subcubes(cubes, cut_factor):
+    batch, channel,(*d) = cubes.shape
+    image_size = d[0]//cut_factor
+    sub_cubes = []
+    for cube in cubes:
+        for i in range(cut_factor):
+            for j in range(cut_factor):
+                for k in range(cut_factor):
+                    sub_cube = cube[:,i*image_size:(i+1)*image_size,j*image_size:(j+1)*image_size,k*image_size:(k+1)*image_size]
+                    sub_cubes.append(sub_cube)
+    sub_cubes = torch.cat(sub_cubes, dim=0).unsqueeze(1)
+    return sub_cubes
 
 def weights_init_orthogonal(m):
     classname = m.__class__.__name__
@@ -639,16 +653,33 @@ if __name__ == "__main__":
     vbv = vbv.unsqueeze(1)
 
 
-    reduce_dim = 4#4
-    T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
-    delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
-    vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
+    #reduce_dim = 4#4
+    #create LR input
     upscale = 4
     T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
         torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
         scale_factor=upscale, mode='trilinear')
-    T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
 
+    #cut into smaller training cubes
+    cut_factor = 4
+    T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
+    delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
+    vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
+    T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+    
+    T21 = normalize(T21)#[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
+    delta = normalize(delta)#[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
+    vbv = normalize(vbv)#[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
+    T21_lr = normalize(T21_lr)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
+    
+    
+    
+    
+    
+    #T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1)
+    
+    print("T21 shape: ", T21.shape, "delta shape: ", delta.shape, "vbv shape: ", vbv.shape, "T21_lr shape: ", T21_lr.shape)
+    
     #create dataset for torch DataLoader
     dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
 
@@ -675,7 +706,7 @@ if __name__ == "__main__":
 
     #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-    model_i = "9"
+    model_i = "10"
     model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
@@ -688,9 +719,9 @@ if __name__ == "__main__":
     loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
-    for e in range(400):
+    for e in range(150):
         
-        loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
+        loader = torch.utils.data.DataLoader( dataset, batch_size=8, shuffle=True) #4
         netG.model.train()
         
         losses = []
@@ -716,6 +747,9 @@ if __name__ == "__main__":
             netG.ema.update()
             
             losses.append(loss.item())
+
+            if i%35 == 0:
+                print(f"Bacth {i} of {len(loader)} batches")
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
         if e==0:
@@ -750,8 +784,9 @@ if __name__ == "__main__":
     vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
     T21_lr = T21_lr[:1]#[:1,:,:16,:16,:16]#[:1]
     
-    print("print model just outiside training loop: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
-    #netG.load_network(model_path)
+    
+    netG.load_network(model_path)
+    print("print model after training loop load: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
     x_sequence,noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
 
     nrows = 3
