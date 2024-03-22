@@ -366,6 +366,7 @@ class GaussianDiffusion(nn.Module):
         super().__init__()
         self.model = model(**model_opt)
         #self.model_opt = model_opt
+        init_weights(self.model, init_type='orthogonal')
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.995)
         self.loss = []
@@ -396,42 +397,72 @@ class GaussianDiffusion(nn.Module):
         #"t and batch number dim should be the same"
         b,(*d) = x0.shape
         t=torch.tensor(t).view(b,*[1]*len(d))
+        alphas_cumprod_t = self.alphas_cumprod[t]
         noise = torch.randn_like(x0) if noise==None else noise
-        x_t = torch.sqrt(self.alphas_cumprod[t]) * x0 + torch.sqrt(1 - self.alphas_cumprod[t]) * noise
+        x_t = torch.sqrt(alphas_cumprod_t) * x0 + torch.sqrt(1 - alphas_cumprod_t) * noise
         return x_t, noise
 
     @torch.no_grad()
     def p_sample(self, x_t, t, conditionals=None):
         b,(*d) = x_t.shape
         t=torch.tensor(t).view(b,*[1]*len(d))
-        noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=self.alphas_cumprod[t])
-        x0 = self.predict_start_from_noise(x_t=x_t, t=t, noise=noise)
+        alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t = self.alphas[t], self.alphas_cumprod[t], self.alphas_cumprod_prev[t], self.betas[t]
+        
 
-        
-        posterior_mean = (torch.sqrt(self.alphas_cumprod_prev[t])*self.betas[t]/(1-self.alphas_cumprod[t])) * x0 + \
-            (torch.sqrt(self.alphas_cumprod[t])*(1-self.alphas_cumprod_prev[t])/(1-self.alphas_cumprod[t])) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github
-        
+        pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=self.alphas_cumprod[t])
+        #x0 = self.predict_start_from_noise(x_t=x_t, t=t, noise=noise)
+
+        #posterior_mean = (torch.sqrt(self.alphas_cumprod_prev[t])*self.betas[t]/(1-self.alphas_cumprod[t])) * x0 + \
+        #    (torch.sqrt(self.alphas_cumprod[t])*(1-self.alphas_cumprod_prev[t])/(1-self.alphas_cumprod[t])) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github
+        #posterior_mean = (torch.sqrt(alpha_t_cumprod_prev) * beta_t/(1-alpha_t_cumprod)) * x0 + \
+        #    (torch.sqrt(alpha_t_cumprod)*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github
+        posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise)
+        posterior_variance_t = self.posterior_variance[t] #torch.sqrt(beta_t)
         noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
+
+        x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
+        
+        
+        if t.item()%50 == 0:
+            print("x_t mean: {0:.2f}, noise mean: {1:.2f}, \
+                  posterior_variance: {2:.2f}, sqrt(1/a): {3:.4f}, (1-a)/sqrt(1-abar): {4:.4f}\
+                  ".format(torch.mean(x_t).item(),torch.mean(noise).item(), 
+                           posterior_variance_t.item(), torch.sqrt(1/alpha_t).item() ,((1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod)).item() 
+                           ))
+            #print("posterior mean terms: term1: {0:.2f}, term2: {1:.4f}".format( ((torch.sqrt(1/alpha_t)) * x_t).mean().item(), ((torch.sqrt(1/alpha_t)) * (1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod) * pred_noise).mean().item() ))
+            #print("posterior variance * noise: {0:.4f}".format((posterior_variance_t * noise).mean().item()))
+        
         for i,(x,t_) in enumerate(zip(x_t,t)):
             if t_==0:
                 noise[i] = torch.zeros_like(x)
             else:
                 noise[i] = torch.randn_like(x)
-        return posterior_mean + noise * self.posterior_variance[t], noise
+        
+        
+        return x_t, noise, pred_noise #torch.sqrt(beta_t)*noise
 
     @torch.no_grad()
     def p_sample_loop(self, conditionals=None, continous=False):
-        sample_inter = (1 | (self.timesteps//100))
+        self.model.eval()
+        sample_inter = (1 | (self.timesteps//10))
         b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
         x_t = torch.randn((b,*d))
         x_sequence = x_t #use channel dimension as time axis
-
+        noises = []
+        pred_noises = []
         for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
-            x_t, noise = self.p_sample(x_t, b*[t], conditionals=conditionals)
+            x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals)
             if t % sample_inter == 0:
+                noises.append(noise)
+                pred_noises.append(pred_noise)
                 x_sequence = torch.cat([x_sequence, x_t], dim=1)
+            if (t == 999) or (t == 700) or (t == 400) or (t == 100) or (t == 0):
+                #print("self.alphas_cumprod[t] in p_sample_loop: ", self.alphas_cumprod[t])
+                print("print model sampling: ", self.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
+        noises = torch.cat(noises, dim=1)
+        pred_noises = torch.cat(pred_noises, dim=1)
         if continous:
-            return x_sequence, noise
+            return x_sequence, noises, pred_noises
         else:
             return x_sequence[:,-1]
     
@@ -593,7 +624,7 @@ if __name__ == "__main__":
 
     path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
 
-    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1010,1011)))
+    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1009)))
     T21, delta, vbv = Data.load()
 
     #convert to pytorch
@@ -608,14 +639,15 @@ if __name__ == "__main__":
     vbv = vbv.unsqueeze(1)
 
 
-    reduce_dim = 2
+    reduce_dim = 8#4
     T21 = normalize(T21)[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
     delta = normalize(delta)[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
     vbv = normalize(vbv)[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
+    upscale = 4
     T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
-        torch.nn.functional.interpolate(T21, scale_factor=0.25, mode='trilinear'),
-        scale_factor=4, mode='trilinear')
-    #T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
+        torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
+        scale_factor=upscale, mode='trilinear')
+    T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=12)
 
     #create dataset for torch DataLoader
     dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
@@ -656,7 +688,7 @@ if __name__ == "__main__":
     loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
-    for e in range(400):
+    for e in range(1):
         
         loader = torch.utils.data.DataLoader(dataset, batch_size=4, shuffle=True)
         netG.model.train()
@@ -666,6 +698,8 @@ if __name__ == "__main__":
         for i,(T21,delta,vbv, T21_lr) in enumerate(loader):
             ts = torch.randint(low = 0, high = netG.timesteps, size = (loader.batch_size, ))
             alphas_cumprod = netG.alphas_cumprod[ts]
+            
+            #print("alphas_cumprod in train: ", alphas_cumprod)
 
             xt, target_noise = netG.q_sample(T21, ts)
             X = torch.cat([xt, delta, vbv, T21_lr], dim = 1)
@@ -684,6 +718,19 @@ if __name__ == "__main__":
             losses.append(loss.item())
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
+        if False:#e==0:
+            #print("print model train: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
+            fig,ax = plt.subplots(1,3, figsize=(15,5))
+            ax[0].imshow(predicted_noise[0,0,:,:,predicted_noise.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
+            ax[0].set_title("Predicted noise, time={0}, \nnoise min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[0], predicted_noise.min().item(), predicted_noise.max().item(), predicted_noise.mean().item(), predicted_noise.std().item()))
+            ax[1].imshow(target_noise[0,0,:,:,target_noise.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
+            ax[1].set_title("Target noise, time={0}, \nnoise min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[0], target_noise.min().item(), target_noise.max().item(), target_noise.mean().item(), target_noise.std().item()))
+            #residual
+            residual = predicted_noise - target_noise
+            ax[2].imshow(residual[0,0,:,:,residual.shape[4]//2].detach().numpy(), vmin=-1, vmax=1)
+            ax[2].set_title("Residual, time={0}, \nresidual min/max/mean/std={1:.2f}/{2:.2f}/{3:.2f}/{4:.2f})".format(ts[0], residual.min().item(), residual.max().item(), residual.mean().item(), residual.std().item()))
+            #plt.show()
+
         
         losses_epoch = np.mean(losses)
         netG.loss.append(losses_epoch)
@@ -694,14 +741,17 @@ if __name__ == "__main__":
         ftime = time.time()
         print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches. Saved: {4}".format(e, ftime - stime, losses_epoch, len(loader), save_bool),flush=True)
 
-    print("Losses:\n", netG.loss, "\n", flush=True)
     
+    print("Losses:\n", np.round(netG.loss,4), "\n", flush=True)
+
     T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
     delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
     vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
     T21_lr = T21_lr[:1]#[:1,:,:16,:16,:16]#[:1]
-
-    x_sequence = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
+    
+    print("print model just outiside training loop: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
+    #netG.load_network(model_path)
+    x_sequence,noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
 
     nrows = 3
     ncols = 5
@@ -715,7 +765,7 @@ if __name__ == "__main__":
         ax.set_title(f"t={i}")
         ax.axis('off')
 
-    plt.savefig(path + "/trained_models/diffusion_model_test_7.png")
+    #plt.savefig(path + "/trained_models/diffusion_model_test_8.png")
 
     fig,axes = plt.subplots(2, 3, figsize=(15,10))
 
@@ -744,4 +794,20 @@ if __name__ == "__main__":
     axes[1,2].grid()
     axes[1,2].legend()
 
-    plt.savefig(path + "/trained_models/diffusion_model_sample_7.png")
+    #plt.savefig(path + "/trained_models/diffusion_model_sample_8.png")
+
+t = np.arange(999)[np.arange(999)%(1000//10)==0]
+ts = torch.tensor(t)
+xt, target_noise = netG.q_sample(T21[:1].repeat(len(t),1,1,1,1), ts)
+
+fig,axes = plt.subplots(2,10, figsize=(50,10))
+
+for i,(ax0,ax1) in enumerate(zip(axes[0,:], axes[1,:])):
+    #ax0.imshow(target[0,:,:,target.shape[3]//2], vmin=-1, vmax=1)
+    ax0.imshow(noise[0,i,:,:,noise.shape[4]//2], vmin=-1, vmax=1)
+    ax0.set_title(f"t={t[-i-1]} " + "target" if i==0 else f"t={t[-i-1]}")
+    ax1.imshow(pred_noises[0,i,:,:,pred_noises.shape[4]//2], vmin=-1, vmax=1)
+plt.savefig(path + "/trained_models/diffusion_model_noise_8.png")
+
+#plt.show()
+    
