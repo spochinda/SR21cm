@@ -389,8 +389,8 @@ class GaussianDiffusion(nn.Module):
         
     def predict_start_from_noise(self, x_t, t, noise):
         b,(*d) = x_t.shape
-        alpha_cumprod = self.alphas_cumprod[t].view(b,*[1]*len(d))
-        x0 = x_t/torch.sqrt(alpha_cumprod) - torch.sqrt(1-alpha_cumprod) * noise/torch.sqrt(alpha_cumprod)
+        alpha_cumprod_t = self.alphas_cumprod[t].view(b,*[1]*len(d))
+        x0 = x_t/torch.sqrt(alpha_cumprod_t) - torch.sqrt(1-alpha_cumprod_t) * noise/torch.sqrt(alpha_cumprod_t)
         return x0
 
     def q_sample(self, x0, t, noise=None): #forward diffusion
@@ -403,32 +403,36 @@ class GaussianDiffusion(nn.Module):
         return x_t, noise
 
     @torch.no_grad()
-    def p_sample(self, x_t, t, conditionals=None):
+    def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, mean_approach = True):
         b,(*d) = x_t.shape
         t=torch.tensor(t).view(b,*[1]*len(d))
         alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t = self.alphas[t], self.alphas_cumprod[t], self.alphas_cumprod_prev[t], self.betas[t]
         
-
-        pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=self.alphas_cumprod[t])
-        #x0 = self.predict_start_from_noise(x_t=x_t, t=t, noise=noise)
-
-        #posterior_mean = (torch.sqrt(self.alphas_cumprod_prev[t])*self.betas[t]/(1-self.alphas_cumprod[t])) * x0 + \
-        #    (torch.sqrt(self.alphas_cumprod[t])*(1-self.alphas_cumprod_prev[t])/(1-self.alphas_cumprod[t])) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github
-        #posterior_mean = (torch.sqrt(alpha_t_cumprod_prev) * beta_t/(1-alpha_t_cumprod)) * x0 + \
-        #    (torch.sqrt(alpha_t_cumprod)*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github
-        posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise)
         posterior_variance_t = self.posterior_variance[t] #torch.sqrt(beta_t)
         noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
+        
+        pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t_cumprod)
 
-        x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
+        if mean_approach:
+            posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise) #approach used in most papers   
+            x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
+            x_t = torch.clamp(x_t, -1.0, 1.0) if clip_denoised else x_t
+        else:
+            x0 = self.predict_start_from_noise(x_t=x_t, t=t, noise=pred_noise) #eq in text above eq 9 rewritten for x0
+            x0 = torch.clamp(x0, -1.0, 1.0) if clip_denoised else x0
+            #beta_t_tilde = beta_t*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)
+            posterior_mean_t = (torch.sqrt(alpha_t_cumprod_prev)*beta_t/(1-alpha_t_cumprod)) * x0 + \
+                (torch.sqrt(alpha_t)*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github. SR3 approach
+            x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
         
+
         
-        if t.item()%50 == 0:
-            print("x_t mean: {0:.2f}, noise mean: {1:.2f}, \
-                  posterior_variance: {2:.2f}, sqrt(1/a): {3:.4f}, (1-a)/sqrt(1-abar): {4:.4f}\
-                  ".format(torch.mean(x_t).item(),torch.mean(noise).item(), 
-                           posterior_variance_t.item(), torch.sqrt(1/alpha_t).item() ,((1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod)).item() 
-                           ))
+
+        #    print("x_t mean: {0:.2f}, noise mean: {1:.2f}, \
+        #          posterior_variance: {2:.2f}, sqrt(1/a): {3:.4f}, (1-a)/sqrt(1-abar): {4:.4f}\
+        #          ".format(torch.mean(x_t).item(),torch.mean(noise).item(), 
+        #                   posterior_variance_t.item(), torch.sqrt(1/alpha_t).item() ,((1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod)).item() 
+        #                   ))
             #print("posterior mean terms: term1: {0:.2f}, term2: {1:.4f}".format( ((torch.sqrt(1/alpha_t)) * x_t).mean().item(), ((torch.sqrt(1/alpha_t)) * (1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod) * pred_noise).mean().item() ))
             #print("posterior variance * noise: {0:.4f}".format((posterior_variance_t * noise).mean().item()))
         
@@ -437,36 +441,47 @@ class GaussianDiffusion(nn.Module):
                 noise[i] = torch.zeros_like(x)
             else:
                 noise[i] = torch.randn_like(x)
+
+        if (t.item() == self.timesteps-1) or (t.item() == 0):
+            print("posterior variance: {0:.4f}".format(posterior_variance_t.item()))
+            print("noise mean, std: {0:.4f}, {1:.4f}".format(torch.mean(noise).item(), torch.std(noise).item()))
+            print("x_t mean, std: {0:.4f}, {1:.4f}".format(torch.mean(x_t).item(), torch.std(x_t).item()))
+            #print alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t
+            print("alpha_t: {0:.4f}, alpha_t_cumprod: {1:.4f}, alpha_t_cumprod_prev: {2:.4f}, beta_t: {3:.4f}".format(alpha_t.item(), alpha_t_cumprod.item(), alpha_t_cumprod_prev.item(), beta_t.item()))
         
         
         return x_t, noise, pred_noise #torch.sqrt(beta_t)*noise
 
     @torch.no_grad()
-    def p_sample_loop(self, conditionals=None, continous=False):
+    def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, mean_approach = True, save_slices=False):
         self.model.eval()
-        sample_inter = (1 | (self.timesteps//10))
+        sample_inter = (1 | (self.timesteps//n_save))
         b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
         x_t = torch.randn((b,*d))
         x_sequence = x_t #use channel dimension as time axis
+        x_slices = [x_t[:,:,:,:,d[-1]//2]] if save_slices else []
         noises = []
         pred_noises = []
         for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
-            x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals)
-            x_t = torch.clamp(x_t, -1.0, 1.0)
+            x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals, clip_denoised=clip_denoised, mean_approach=mean_approach)
 
             if t % sample_inter == 0:
                 noises.append(noise)
                 pred_noises.append(pred_noise)
                 x_sequence = torch.cat([x_sequence, x_t], dim=1)
-            if (t == 999) or (t == 700) or (t == 400) or (t == 100) or (t == 0):
+            if save_slices:
+                x_slices.append(x_t[:,:,:,:,d[-1]//2])
+            #if (t == 999) or (t == 700) or (t == 400) or (t == 100) or (t == 0):
                 #print("self.alphas_cumprod[t] in p_sample_loop: ", self.alphas_cumprod[t])
-                print("print model sampling: ", self.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
+                #print("print model sampling: ", self.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
         noises = torch.cat(noises, dim=1)
         pred_noises = torch.cat(pred_noises, dim=1)
-        if continous:
-            return x_sequence, noises, pred_noises
-        else:
-            return x_sequence[:,-1]
+        if save_slices:
+            x_slices = torch.cat(x_slices, dim=1)
+        #if continous:
+        return x_sequence, x_slices, noises, pred_noises
+        #else:
+        #    return x_sequence[:,-1]
     
     def p_sample_loop_2d_slices(self, conditionals=None, continous=False):
         #sample_inter = (1 | (self.timesteps//100))
@@ -586,7 +601,6 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100):
     return k_vals, P_k
 
 def normalize(x):
-    print("x shape: ", x.shape)
     x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
     x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
     x = (x - x_min) / (x_max - x_min)
@@ -663,7 +677,7 @@ if __name__ == "__main__":
         scale_factor=upscale, mode='trilinear')
 
     #cut into smaller training cubes
-    cut_factor = 4
+    cut_factor = 8
     T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
     delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
     vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
@@ -687,7 +701,7 @@ if __name__ == "__main__":
 
     #optimizer and model
     model = UNet
-    model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)#T21.shape[-1], dim=3)
+    model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=16, dim=3)#T21.shape[-1], dim=3)
     noise_schedule_opt = dict(timesteps = 1000, beta_start = 1e-6, beta_end = 1e-2) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
 
     netG = GaussianDiffusion(
@@ -708,7 +722,7 @@ if __name__ == "__main__":
 
     #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-    model_i = "12"
+    model_i = "13"
     model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
@@ -718,12 +732,10 @@ if __name__ == "__main__":
 
     
     
-    loss = nn.MSELoss(reduction='mean')
-
     print("Starting training", flush=True)
     for e in range(1):
         
-        loader = torch.utils.data.DataLoader( dataset, batch_size=8, shuffle=True) #4
+        loader = torch.utils.data.DataLoader( dataset, batch_size=2*cut_factor, shuffle=True) #4
         netG.model.train()
         
         losses = []
@@ -735,11 +747,11 @@ if __name__ == "__main__":
             #print("alphas_cumprod in train: ", alphas_cumprod)
 
             xt, target_noise = netG.q_sample(T21, ts)
-            X = torch.cat([xt.clamp_(-1,1), delta, vbv, T21_lr], dim = 1)
+            X = torch.cat([xt, delta, vbv, T21_lr], dim = 1)
             
             predicted_noise = netG.model(X, alphas_cumprod)
             
-            loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise)
+            loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise) # torch.nn.L1Loss(reduction='mean')(target_noise, predicted_noise) 
             
             netG.optG.zero_grad()
             loss.backward()
@@ -781,15 +793,33 @@ if __name__ == "__main__":
     
     print("Losses:\n", np.round(netG.loss,4), "\n", flush=True)
 
-    T21 = T21[:1]#[:1,:,:16,:16,:16]#[:1]
-    delta = delta[:1]#[:1,:,:16,:16,:16]#[:1]
-    vbv = vbv[:1]#[:1,:,:16,:16,:16]#[:1]
-    T21_lr = T21_lr[:1]#[:1,:,:16,:16,:16]#[:1]
+    ####################Load validation data for testing
+    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1010,1011)))
+    T21, delta, vbv = Data.load()
+    T21 = torch.from_numpy(T21)
+    delta = torch.from_numpy(delta)
+    vbv = torch.from_numpy(vbv)
+    T21 = T21.permute(0,4,1,2,3)
+    delta = delta.unsqueeze(1)
+    vbv = vbv.unsqueeze(1)
+    upscale = 2
+    T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
+        torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
+        scale_factor=upscale, mode='trilinear')
+    T21 = T21[:1,:,60:92,74:106,48:80]#test cutout of ionized region
+    delta = delta[:1,:,60:92,74:106,48:80]#test cutout of ionized region
+    vbv = vbv[:1,:,60:92,74:106,48:80]#test cutout of ionized region
+    T21_lr = T21_lr[:1,:,60:92,74:106,48:80]#test cutout of ionized region
+    T21 = normalize(T21)#[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
+    delta = normalize(delta)#[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
+    vbv = normalize(vbv)#[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
+    T21_lr = normalize(T21_lr)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
+    ####################End load validation data for testing
     
     
     netG.load_network(model_path)
     print("print model after training loop load: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
-    x_sequence,noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], continous=True)
+    x_sequence,x_slices, noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], n_save=10)
 
     nrows = 3
     ncols = 5
