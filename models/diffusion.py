@@ -452,6 +452,8 @@ class GaussianDiffusion(nn.Module):
         pred_noises = []
         for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
             x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals)
+            x_t = torch.clamp(x_t, -1.0, 1.0)
+
             if t % sample_inter == 0:
                 noises.append(noise)
                 pred_noises.append(pred_noise)
@@ -655,7 +657,7 @@ if __name__ == "__main__":
 
     #reduce_dim = 4#4
     #create LR input
-    upscale = 4
+    upscale = 2
     T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
         torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
         scale_factor=upscale, mode='trilinear')
@@ -686,7 +688,7 @@ if __name__ == "__main__":
     #optimizer and model
     model = UNet
     model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)#T21.shape[-1], dim=3)
-    noise_schedule_opt = dict(timesteps = 2000, beta_start = 1e-6, beta_end = 1e-2) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
+    noise_schedule_opt = dict(timesteps = 1000, beta_start = 1e-6, beta_end = 1e-2) #21cm ddpm ###dict(timesteps = 1000, s = 0.008)
 
     netG = GaussianDiffusion(
             model=model,
@@ -706,7 +708,7 @@ if __name__ == "__main__":
 
     #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-    model_i = "10"
+    model_i = "12"
     model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
@@ -719,7 +721,7 @@ if __name__ == "__main__":
     loss = nn.MSELoss(reduction='mean')
 
     print("Starting training", flush=True)
-    for e in range(150):
+    for e in range(1):
         
         loader = torch.utils.data.DataLoader( dataset, batch_size=8, shuffle=True) #4
         netG.model.train()
@@ -733,7 +735,7 @@ if __name__ == "__main__":
             #print("alphas_cumprod in train: ", alphas_cumprod)
 
             xt, target_noise = netG.q_sample(T21, ts)
-            X = torch.cat([xt, delta, vbv, T21_lr], dim = 1)
+            X = torch.cat([xt.clamp_(-1,1), delta, vbv, T21_lr], dim = 1)
             
             predicted_noise = netG.model(X, alphas_cumprod)
             
@@ -752,7 +754,7 @@ if __name__ == "__main__":
                 print(f"Bacth {i} of {len(loader)} batches")
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
-        if e==0:
+        if e==99:
             #print("print model train: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
             j = ts.argmin().item()
             fig,ax = plt.subplots(1,3, figsize=(15,5))
@@ -844,6 +846,8 @@ if __name__ == "__main__":
         ax0.set_title(f"t={t[-i-1]} " + "target" if i==0 else f"t={t[-i-1]}")
         ax1.imshow(pred_noises[0,i,:,:,pred_noises.shape[4]//2], vmin=-1, vmax=1)
     plt.savefig(path + "/trained_models/diffusion_model_noise_{0}.png".format(model_i))
+
+    torch.save(x_sequence, path + "/trained_models/diffusion_model_sample_{0}.pt".format(model_i))
 
 #plt.show()
     
