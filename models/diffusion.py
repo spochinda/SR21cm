@@ -767,7 +767,7 @@ if __name__ == "__main__":
             
             losses.append(loss.item())
 
-            if i%35 == 0:
+            if i%(len(loader)//3) == 0:
                 print(f"Bacth {i} of {len(loader)} batches")
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
@@ -824,7 +824,7 @@ if __name__ == "__main__":
     
     netG.load_network(model_path)
     print("print model after training loop load: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
-    x_sequence,x_slices, noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], n_save=10)
+    x_sequence,x_slices, noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], n_save=10, clip_denoised=True, mean_approach = False, save_slices=True)
 
     nrows = 3
     ncols = 5
@@ -882,7 +882,8 @@ if __name__ == "__main__":
         ax1.imshow(pred_noises[0,i,:,:,pred_noises.shape[4]//2], vmin=-1, vmax=1)
     plt.savefig(path + "/trained_models/diffusion_model_noise_{0}.png".format(model_i))
 
-    torch.save(x_sequence, path + "/trained_models/diffusion_model_sample_{0}.pt".format(model_i))
-    
+    #save x_sequence and x_slices
+    #torch.save(x_sequence, path + "/trained_models/diffusion_model_sample_{0}.pt".format(model_i))
+
 #plt.show()
     
