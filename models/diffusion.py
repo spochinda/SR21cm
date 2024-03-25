@@ -689,15 +689,14 @@ if __name__ == "__main__":
     T21_lr = normalize(T21_lr)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
     
     
+
     
     
-    
-    #T21, delta, vbv, T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1)
+
     
     print("T21 shape: ", T21.shape, "delta shape: ", delta.shape, "vbv shape: ", vbv.shape, "T21_lr shape: ", T21_lr.shape)
     
-    #create dataset for torch DataLoader
-    dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
+    
 
     #optimizer and model
     model = UNet
@@ -733,8 +732,14 @@ if __name__ == "__main__":
     
     
     print("Starting training", flush=True)
-    for e in range(1):
+    for e in range(100):
+        #augment and create dataset for torch DataLoader
+        T21_aug, delta_aug, vbv_aug, T21_lr_aug = augment_dataset(T21, delta, vbv, T21_lr, n=1)
+        dataset = torch.utils.data.TensorDataset(T21_aug, delta_aug, vbv_aug, T21_lr_aug)
+        #dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
+
         
+
         loader = torch.utils.data.DataLoader( dataset, batch_size=2*cut_factor, shuffle=True) #4
         netG.model.train()
         
@@ -878,6 +883,6 @@ if __name__ == "__main__":
     plt.savefig(path + "/trained_models/diffusion_model_noise_{0}.png".format(model_i))
 
     torch.save(x_sequence, path + "/trained_models/diffusion_model_sample_{0}.pt".format(model_i))
-
+    
 #plt.show()
     
