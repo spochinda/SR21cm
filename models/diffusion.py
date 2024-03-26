@@ -403,7 +403,7 @@ class GaussianDiffusion(nn.Module):
         return x_t, noise
 
     @torch.no_grad()
-    def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, mean_approach = True):
+    def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, mean_approach = True, ema=False):
         b,(*d) = x_t.shape
         t=torch.tensor(t).view(b,*[1]*len(d))
         alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t = self.alphas[t], self.alphas_cumprod[t], self.alphas_cumprod_prev[t], self.betas[t]
@@ -411,7 +411,11 @@ class GaussianDiffusion(nn.Module):
         posterior_variance_t = self.posterior_variance[t] #torch.sqrt(beta_t)
         noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
         
-        pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t_cumprod)
+        if ema:
+            with self.ema.average_parameters():
+                pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t_cumprod)
+        else:
+            pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t_cumprod)
 
         if mean_approach:
             posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise) #approach used in most papers   
@@ -453,7 +457,7 @@ class GaussianDiffusion(nn.Module):
         return x_t, noise, pred_noise #torch.sqrt(beta_t)*noise
 
     @torch.no_grad()
-    def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, mean_approach = True, save_slices=False):
+    def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, mean_approach = True, save_slices=False, ema=False):
         self.model.eval()
         sample_inter = (1 | (self.timesteps//n_save))
         b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
@@ -463,7 +467,7 @@ class GaussianDiffusion(nn.Module):
         noises = []
         pred_noises = []
         for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
-            x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals, clip_denoised=clip_denoised, mean_approach=mean_approach)
+            x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals, clip_denoised=clip_denoised, mean_approach=mean_approach, ema=ema)
 
             if t % sample_inter == 0:
                 noises.append(noise)
@@ -824,7 +828,7 @@ if __name__ == "__main__":
     
     netG.load_network(model_path)
     print("print model after training loop load: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
-    x_sequence,x_slices, noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], n_save=10, clip_denoised=True, mean_approach = False, save_slices=True)
+    x_sequence,x_slices, noise, pred_noises = netG.p_sample_loop(conditionals=[delta,vbv,T21_lr], n_save=10, clip_denoised=True, mean_approach = False, save_slices=True, ema=True)
 
     nrows = 3
     ncols = 5
