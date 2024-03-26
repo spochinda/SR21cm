@@ -749,14 +749,14 @@ if __name__ == "__main__":
         
         losses = []
         stime = time.time()
-        for i,(T21,delta,vbv, T21_lr) in enumerate(loader):
+        for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(loader):
             ts = torch.randint(low = 0, high = netG.timesteps, size = (loader.batch_size, ))
             alphas_cumprod = netG.alphas_cumprod[ts]
             
             #print("alphas_cumprod in train: ", alphas_cumprod)
 
-            xt, target_noise = netG.q_sample(T21, ts)
-            X = torch.cat([xt, delta, vbv, T21_lr], dim = 1)
+            xt, target_noise = netG.q_sample(T21_, ts)
+            X = torch.cat([xt, delta_, vbv_, T21_lr_], dim = 1)
             
             predicted_noise = netG.model(X, alphas_cumprod)
             
@@ -771,7 +771,7 @@ if __name__ == "__main__":
             
             losses.append(loss.item())
 
-            if i%(len(loader)//3) == 0:
+            if False: #i%(len(loader)//3) == 0:
                 print(f"Bacth {i} of {len(loader)} batches")
             if False: #not i % (len(loader)//2):
                 print(f"Bacth {i} of {len(loader)} batches")
