@@ -370,6 +370,7 @@ class GaussianDiffusion(nn.Module):
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.995)
         self.loss = []
+        self.losses_voxel_history = []
         self.loss_type = loss_type
         self.noise_schedule = noise_schedule
         self.noise_schedule_opt = noise_schedule_opt
@@ -403,42 +404,64 @@ class GaussianDiffusion(nn.Module):
         return x_t, noise
 
     @torch.no_grad()
-    def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, mean_approach = True, ema=False):
+    def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, mean_approach = "DDPM SR3", ema=False):
         b,(*d) = x_t.shape
-        t=torch.tensor(t).view(b,*[1]*len(d))
-        alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t = self.alphas[t], self.alphas_cumprod[t], self.alphas_cumprod_prev[t], self.betas[t]
+        time = t
+        t=torch.tensor(b*[t]).view(b,*[1]*len(d))
         
+        alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t = self.alphas[t], self.alphas_cumprod[t], self.alphas_cumprod_prev[t], self.betas[t]
+        noise_level = alpha_t_cumprod
+        
+        if mean_approach=="DDIM": #
+            ddim_alpha_t = self.ddim_alpha[t]
+            ddim_alpha_t_sqrt = self.ddim_alpha_sqrt[t]
+            ddim_alpha_t_prev = self.ddim_alpha_prev[t]
+            ddim_sigma_t = self.ddim_sigma[t]
+            ddim_sqrt_one_minus_alpha_t = self.ddim_sqrt_one_minus_alpha[t]
+            noise_level = ddim_alpha_t
+
+
+
+
+        #with netG.ema.average_parameters():#ddim_alpha[torch.tensor(i).view(1,1,1,1,1)]
+        #    pred_noise = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=time)
+        #x0 = (x_t - ddim_sqrt_one_minus_alpha_t * pred_noise) / (ddim_alpha_t ** 0.5)
+        #x0 = x0.clamp(-1., 1.)
+        #dir_xt = (1. - ddim_alpha_t_prev - ddim_sigma_t ** 2).sqrt() * pred_noise
+        
+        #noise = torch.randn_like(x_t)*temperature
+        #x_t = (ddim_alpha_t_prev ** 0.5) * x0 + dir_xt + ddim_sigma_t * noise #x_t-1
+
+
         posterior_variance_t = self.posterior_variance[t] #torch.sqrt(beta_t)
         noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
         
         if ema:
             with self.ema.average_parameters():
-                pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t_cumprod)
+                pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
         else:
-            pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t_cumprod)
+            pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
 
-        if mean_approach:
+        if mean_approach=="DDPM Classic":
             posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise) #approach used in most papers   
             x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
             x_t = torch.clamp(x_t, -1.0, 1.0) if clip_denoised else x_t
-        else:
+
+        elif mean_approach=="DDPM SR3":
             x0 = self.predict_start_from_noise(x_t=x_t, t=t, noise=pred_noise) #eq in text above eq 9 rewritten for x0
             x0 = torch.clamp(x0, -1.0, 1.0) if clip_denoised else x0
             #beta_t_tilde = beta_t*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)
             posterior_mean_t = (torch.sqrt(alpha_t_cumprod_prev)*beta_t/(1-alpha_t_cumprod)) * x0 + \
                 (torch.sqrt(alpha_t)*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github. SR3 approach
-            x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
-        
+            x_t = posterior_mean_t + noise * posterior_variance_t if time > 0 else posterior_mean_t
 
-        
-
-        #    print("x_t mean: {0:.2f}, noise mean: {1:.2f}, \
-        #          posterior_variance: {2:.2f}, sqrt(1/a): {3:.4f}, (1-a)/sqrt(1-abar): {4:.4f}\
-        #          ".format(torch.mean(x_t).item(),torch.mean(noise).item(), 
-        #                   posterior_variance_t.item(), torch.sqrt(1/alpha_t).item() ,((1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod)).item() 
-        #                   ))
-            #print("posterior mean terms: term1: {0:.2f}, term2: {1:.4f}".format( ((torch.sqrt(1/alpha_t)) * x_t).mean().item(), ((torch.sqrt(1/alpha_t)) * (1-alpha_t)/torch.sqrt(1 - alpha_t_cumprod) * pred_noise).mean().item() ))
-            #print("posterior variance * noise: {0:.4f}".format((posterior_variance_t * noise).mean().item()))
+        elif mean_approach=="DDIM":
+            x0 = (x_t - ddim_sqrt_one_minus_alpha_t * pred_noise) / (ddim_alpha_t ** 0.5)
+            #x0 = x0.clamp(-1., 1.)
+            dir_xt = (1. - ddim_alpha_t_prev - ddim_sigma_t ** 2).sqrt() * pred_noise
+            
+            noise = noise*self.temperature
+            x_t = (ddim_alpha_t_prev ** 0.5) * x0 + dir_xt + ddim_sigma_t * noise #x_t-1
         
         for i,(x,t_) in enumerate(zip(x_t,t)):
             if t_==0:
@@ -446,38 +469,59 @@ class GaussianDiffusion(nn.Module):
             else:
                 noise[i] = torch.randn_like(x)
 
-        if (t.item() == self.timesteps-1) or (t.item() == 0):
-            print("posterior variance: {0:.4f}".format(posterior_variance_t.item()))
-            print("noise mean, std: {0:.4f}, {1:.4f}".format(torch.mean(noise).item(), torch.std(noise).item()))
-            print("x_t mean, std: {0:.4f}, {1:.4f}".format(torch.mean(x_t).item(), torch.std(x_t).item()))
-            #print alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t
-            print("alpha_t: {0:.4f}, alpha_t_cumprod: {1:.4f}, alpha_t_cumprod_prev: {2:.4f}, beta_t: {3:.4f}".format(alpha_t.item(), alpha_t_cumprod.item(), alpha_t_cumprod_prev.item(), beta_t.item()))
-        
+        #if (t.item() == self.timesteps-1) or (t.item() == 0):
+        #    print("posterior variance: {0:.4f}".format(posterior_variance_t.item()))
+        #    print("noise mean, std: {0:.4f}, {1:.4f}".format(torch.mean(noise).item(), torch.std(noise).item()))
+        #    print("x_t mean, std: {0:.4f}, {1:.4f}".format(torch.mean(x_t).item(), torch.std(x_t).item()))
+        #    #print alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t
+        #    print("alpha_t: {0:.4f}, alpha_t_cumprod: {1:.4f}, alpha_t_cumprod_prev: {2:.4f}, beta_t: {3:.4f}".format(alpha_t.item(), alpha_t_cumprod.item(), alpha_t_cumprod_prev.item(), beta_t.item()))
         
         return x_t, noise, pred_noise #torch.sqrt(beta_t)*noise
 
     @torch.no_grad()
-    def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, mean_approach = True, save_slices=False, ema=False):
+    def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, mean_approach = True, save_slices=False, ema=False, ddim_n_steps = None, verbose = True):
+        assert mean_approach in ["DDPM Classic", "DDPM SR3", "DDIM"], "mean_approach must be one of ['DDPM Classic', 'DDPM SR3', 'DDIM']"
+        if mean_approach=="DDIM":
+            assert ddim_n_steps is not None, "ddim_n_steps must be specified (int) for DDIM mean approach"
+            c = self.timesteps // ddim_n_steps 
+            ddim_timesteps = np.asarray(list(range(0, self.timesteps, c))) + 1
+            ddim_eta = 0.
+
+            self.ddim_alpha = self.alphas_cumprod[ddim_timesteps]
+            self.ddim_alpha_sqrt = torch.sqrt(self.ddim_alpha)
+            self.ddim_alpha_prev = torch.cat([self.alphas_cumprod[0:1], self.alphas_cumprod[ddim_timesteps[:-1]]])
+
+            self.ddim_sigma = (ddim_eta *
+                        ((1 - self.ddim_alpha_prev) / (1 - self.ddim_alpha) *
+                        (1 - self.ddim_alpha / self.ddim_alpha_prev)) ** .5)
+            self.ddim_sqrt_one_minus_alpha = (1. - self.ddim_alpha) ** .5 
+            self.temperature = 1.
+
+        
         self.model.eval()
         sample_inter = (1 | (self.timesteps//n_save))
         b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
+        
         x_t = torch.randn((b,*d))
         x_sequence = x_t #use channel dimension as time axis
         x_slices = [x_t[:,:,:,:,d[-1]//2]] if save_slices else []
+        
         noises = []
         pred_noises = []
-        for t in tqdm(reversed(range(0, self.timesteps)), desc='sampling loop time step', total=self.timesteps):
-            x_t, noise, pred_noise = self.p_sample(x_t, b*[t], conditionals=conditionals, clip_denoised=clip_denoised, mean_approach=mean_approach, ema=ema)
+        
+        interval = reversed(range(0, self.timesteps)) if (mean_approach=="DDPM Classic") or (mean_approach=="DDPM SR3") else reversed(range(ddim_n_steps))
+        sampling_timesteps = self.timesteps if (mean_approach=="DDPM Classic") or (mean_approach=="DDPM SR3") else ddim_n_steps
 
+        assert n_save < sampling_timesteps, "n_save must be smaller than time steps"
+        for t in tqdm(interval, desc='sampling loop time step', total=sampling_timesteps, disable = not verbose):
+            x_t, noise, pred_noise = self.p_sample(x_t, t, conditionals=conditionals, clip_denoised=clip_denoised, mean_approach=mean_approach, ema=ema)
             if t % sample_inter == 0:
                 noises.append(noise)
                 pred_noises.append(pred_noise)
                 x_sequence = torch.cat([x_sequence, x_t], dim=1)
             if save_slices:
                 x_slices.append(x_t[:,:,:,:,d[-1]//2])
-            #if (t == 999) or (t == 700) or (t == 400) or (t == 100) or (t == 0):
-                #print("self.alphas_cumprod[t] in p_sample_loop: ", self.alphas_cumprod[t])
-                #print("print model sampling: ", self.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
+
         noises = torch.cat(noises, dim=1)
         pred_noises = torch.cat(pred_noises, dim=1)
         if save_slices:
@@ -509,7 +553,9 @@ class GaussianDiffusion(nn.Module):
                 model = self.model.state_dict(), 
                 optimizer = self.optG.state_dict(),# epoch = e ),
                 ema = self.ema.state_dict(),
-                loss = self.loss),
+                loss = self.loss,
+                losses_voxel_history = self.losses_voxel_history,
+                noise_schedule_opt = self.noise_schedule_opt),
                 f = path
                 )
 
@@ -519,6 +565,15 @@ class GaussianDiffusion(nn.Module):
         self.optG.load_state_dict(loaded_state['optimizer'])
         self.ema.load_state_dict(loaded_state['ema'])
         self.loss = loaded_state['loss']
+        try:
+            self.noise_schedule_opt = loaded_state['noise_schedule_opt']
+            self.set_new_noise_schedule(self.noise_schedule_opt)
+            self.losses_voxel_history = loaded_state['losses_voxel_history']
+        except:
+            print("Noise schedule or losses_voxel_history couldn't be loaded")
+            self.losses_voxel_history = []
+
+
 
 
 
@@ -658,30 +713,28 @@ if __name__ == "__main__":
 
     path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
 
-    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1009)))
+
+    #Load training data
+    upscale = 2 #upscale factor
+    cut_factor = 8 #cut into smaller training cubes
+
+    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1008)))
     T21, delta, vbv = Data.load()
 
     #convert to pytorch
     T21 = torch.from_numpy(T21)
     delta = torch.from_numpy(delta)
     vbv = torch.from_numpy(vbv)
-
-    #convert from 8,128,128,128,1 to 8,1,128,128,128
-    T21 = T21.permute(0,4,1,2,3)
-    #Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
-    delta = delta.unsqueeze(1)
+   
+    T21 = T21.permute(0,4,1,2,3) #convert from 8,128,128,128,1 to 8,1,128,128,128
+    delta = delta.unsqueeze(1) #Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
     vbv = vbv.unsqueeze(1)
-
-
-    #reduce_dim = 4#4
-    #create LR input
-    upscale = 2
     T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
         torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
         scale_factor=upscale, mode='trilinear')
 
-    #cut into smaller training cubes
-    cut_factor = 8
+    
+    
     T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
     delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
     vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
@@ -692,13 +745,40 @@ if __name__ == "__main__":
     vbv = normalize(vbv)#[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
     T21_lr = normalize(T21_lr)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
     
+
+
+
+    #Load validation data
+    Data_validation = DataManager(path, redshifts=[10,], IC_seeds=list(range(1008,1011)))
+    T21_validation, delta_validation, vbv_validation = Data_validation.load()
+
+    #convert to pytorch
+    T21_validation = torch.from_numpy(T21_validation)
+    delta_validation = torch.from_numpy(delta_validation)
+    vbv_validation = torch.from_numpy(vbv_validation)
+   
+    T21_validation = T21_validation.permute(0,4,1,2,3) #convert from 8,128,128,128,1 to 8,1,128,128,128
+    delta_validation = delta_validation.unsqueeze(1) #Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
+    vbv_validation = vbv_validation.unsqueeze(1)
+    T21_lr_validation = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
+        torch.nn.functional.interpolate(T21_validation, scale_factor=1/upscale, mode='trilinear'),
+        scale_factor=upscale, mode='trilinear')
+
+    T21_validation = get_subcubes(cubes=T21_validation, cut_factor=cut_factor)
+    delta_validation = get_subcubes(cubes=delta_validation, cut_factor=cut_factor)
+    vbv_validation = get_subcubes(cubes=vbv_validation, cut_factor=cut_factor)
+    T21_lr_validation = get_subcubes(cubes=T21_lr_validation, cut_factor=cut_factor)
     
+    T21_validation = normalize(T21_validation)#[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
+    delta_validation = normalize(delta_validation)#[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
+    vbv_validation = normalize(vbv_validation)#[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
+    T21_lr_validation = normalize(T21_lr_validation)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
+    
+    dataset_validation = torch.utils.data.TensorDataset(T21_validation, delta_validation, vbv_validation, T21_lr_validation)
+    loader_validation = torch.utils.data.DataLoader( dataset_validation, batch_size=2*cut_factor, shuffle=True)
 
     
-    
 
-    
-    print("T21 shape: ", T21.shape, "delta shape: ", delta.shape, "vbv shape: ", vbv.shape, "T21_lr shape: ", T21_lr.shape)
     
     
 
@@ -716,16 +796,9 @@ if __name__ == "__main__":
             learning_rate=1e-4
         )
 
-    ###3D test
-    #ts = torch.randint(low = 1, high = netG.timesteps, size = (4, ))
-    #alphas_cumprod = netG.alphas_cumprod[ts]
-    #xt, target_noise = netG.q_sample(T21[:4], ts)
-    #X = torch.cat([xt, delta[:4], vbv[:4], T21_lr[:4]], dim = 1)
-    #predicted_noise = netG.model(X, alphas_cumprod)
-
     #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-    model_i = "13"
+    model_i = "15"
     model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
@@ -734,9 +807,8 @@ if __name__ == "__main__":
         print(f"No checkpoint found at {model_path}. Starting from scratch.", flush=True)
 
     
-    
     print("Starting training", flush=True)
-    for e in range(100):
+    for e in range(200):
         #augment and create dataset for torch DataLoader
         T21_aug, delta_aug, vbv_aug, T21_lr_aug = augment_dataset(T21, delta, vbv, T21_lr, n=1)
         dataset = torch.utils.data.TensorDataset(T21_aug, delta_aug, vbv_aug, T21_lr_aug)
@@ -771,11 +843,10 @@ if __name__ == "__main__":
             
             losses.append(loss.item())
 
-            if False: #i%(len(loader)//3) == 0:
+            if i%(len(loader)//3) == 0:
                 print(f"Bacth {i} of {len(loader)} batches")
-            if False: #not i % (len(loader)//2):
-                print(f"Bacth {i} of {len(loader)} batches")
-        if e==99:
+
+        if False: #e==99:
             #print("print model train: ", netG.model.state_dict()['final_block.2.conv.weight'][0,0,0,:,:])
             j = ts.argmin().item()
             fig,ax = plt.subplots(1,3, figsize=(15,5))
@@ -792,16 +863,41 @@ if __name__ == "__main__":
         
         losses_epoch = np.mean(losses)
         netG.loss.append(losses_epoch)
-        save_bool = losses_epoch == np.min(netG.loss)
-        if save_bool:
+
+
+
+
+        if losses_epoch == np.min(netG.loss): #save_bool:
+            losses_voxel = 0
+            stime_ckpt = time.time()
+            #for i,(T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in enumerate(loader_validation):
+            for i, (T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in tqdm(enumerate(loader_validation), total=len(loader_validation)):
+                x_sequence, x_slices, noises, pred_noises = netG.p_sample_loop(conditionals=[delta_validation_, vbv_validation_, T21_lr_validation_], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=True, ddim_n_steps = 10, verbose=False)
+                losses_voxel += nn.MSELoss(reduction='mean')(x_sequence[:,-1:], T21_validation_).item()
             
-            netG.save_network(model_path)
-        ftime = time.time()
-        print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches. Saved: {4}".format(e, ftime - stime, losses_epoch, len(loader), save_bool),flush=True)
+            losses_voxel /= len(loader)
+
+            netG.losses_voxel_history.append(losses_voxel)
+
+            print("DDIM voxel loss {0:.4f} and time {1:.2f}".format(losses_voxel, time.time()-stime_ckpt))
+            
+            if losses_voxel == np.min(netG.losses_voxel_history):
+                save_bool = True
+                #print("Would save model now. Loss history is: ", netG.losses_voxel_history)
+                netG.save_network(model_path)
+        else:
+            save_bool = False
+            
+            
+
 
     
+            
+        ftime = time.time()
+        print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches. Saved: {4}".format(e, ftime - stime, losses_epoch, len(loader), save_bool),flush=True)
+    
     print("Losses:\n", np.round(netG.loss,4), "\n", flush=True)
-
+    
     ####################Load validation data for testing
     Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1010,1011)))
     T21, delta, vbv = Data.load()
