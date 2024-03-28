@@ -798,7 +798,7 @@ if __name__ == "__main__":
 
     #ema = ExponentialMovingAverage(netG.model.parameters(), decay=0.995)
     #ema_model = copy.deepcopy(nn_model).eval().requires_grad_(False)
-    model_i = "16"
+    model_i = "17"
     model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     if os.path.isfile(model_path):
         print("Loading checkpoint", flush=True)
@@ -861,29 +861,50 @@ if __name__ == "__main__":
             plt.savefig(path + "/trained_models/diffusion_model_intraining_{0}.png".format(model_i))
 
         
+
+
         losses_epoch = np.mean(losses)
         netG.loss.append(losses_epoch)
-
+        validation_type = "DDPM SR3"
         if losses_epoch == np.min(netG.loss): #save_bool:
-            if e>70: #only start checking voxel loss after n epochs #change this when it works 
+            if e>=70: #only start checking voxel loss after n epochs #change this when it works 
                 losses_voxel = 0
                 stime_ckpt = time.time()
-                for i,(T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in enumerate(loader_validation):
-                #for i, (T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in tqdm(enumerate(loader_validation), total=len(loader_validation)):
-                    x_sequence, x_slices, noises, pred_noises = netG.p_sample_loop(conditionals=[delta_validation_, vbv_validation_, T21_lr_validation_], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=True, ddim_n_steps = 10, verbose=False)
-                    losses_voxel += nn.MSELoss(reduction='mean')(x_sequence[:,-1:], T21_validation_).item()
+
+                if validation_type == "DDIM":
+                    print(validation_type + " validation")
+                    for i,(T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in enumerate(loader_validation):
+                    #for i, (T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in tqdm(enumerate(loader_validation), total=len(loader_validation)):
+                        x_sequence, x_slices, noises, pred_noises = netG.p_sample_loop(conditionals=[delta_validation_, vbv_validation_, T21_lr_validation_], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=True, ddim_n_steps = 10, verbose=False)
+                        losses_voxel += nn.MSELoss(reduction='mean')(x_sequence[:,-1:], T21_validation_).item()
+                    losses_voxel /= len(loader)
+                    netG.losses_voxel_history.append(losses_voxel)
+                    print("{0} voxel loss {1:.4f} and time {2:.2f}".format(validation_type, losses_voxel, time.time()-stime_ckpt))
+                    save_bool = losses_voxel == np.min(netG.losses_voxel_history)
+
+                elif (validation_type == "DDPM SR3") or (validation_type=="DDPM Classic"):
+                    print(validation_type + " validation")
+                    T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_ = loader_validation.dataset.tensors
+                    #pick random int from batch shape 0 of validation data
+                    i = torch.randint(low=0, high=T21_validation_.shape[0], size=(1,)).item()
+                    x_sequence, x_slices, noises, pred_noises = netG.p_sample_loop(conditionals=[delta_validation_[i:i+1], vbv_validation_[i:i+1], T21_lr_validation_[i:i+1]], n_save=100, clip_denoised=True, mean_approach = validation_type, save_slices=False, ema=True, ddim_n_steps = 10, verbose=False)
+                    losses_voxel += nn.MSELoss(reduction='mean')(x_sequence[:,-1:], T21_validation_[i:i+1]).item()
+                    netG.losses_voxel_history.append(losses_voxel)
+                    print("{0} voxel loss {1:.4f} and time {2:.2f}".format(validation_type, losses_voxel, time.time()-stime_ckpt))
+                    save_bool = losses_voxel == np.min(netG.losses_voxel_history)
                 
-                losses_voxel /= len(loader)
-
-                netG.losses_voxel_history.append(losses_voxel)
-
-                print("DDIM voxel loss {0:.4f} and time {1:.2f}".format(losses_voxel, time.time()-stime_ckpt))
-                save_bool = losses_voxel == np.min(netG.losses_voxel_history)
+                elif validation_type == "None":
+                    save_bool = True
+                
+                else:
+                    assert False, "Validation type not recognized"
             else:
                 save_bool = True
+            
+
             if save_bool:
-                #print("Would save model now. Loss history is: ", netG.losses_voxel_history)
-                netG.save_network(model_path)
+                print("Would save model now. Loss history is: ", netG.losses_voxel_history)
+                #netG.save_network(model_path)
         else:
             save_bool = False
             
@@ -895,7 +916,8 @@ if __name__ == "__main__":
         ftime = time.time()
         print("Epoch {0} trained in {1:.2f}s. Average loss {2:.4f} over {3} batches. Saved: {4}".format(e, ftime - stime, losses_epoch, len(loader), save_bool),flush=True)
     
-    print("Losses:\n", np.round(netG.loss,4), "\n", flush=True)
+    
+    #print("Losses:\n", np.round(netG.loss,4), "\n", flush=True)
     
     ####################Load validation data for testing
     Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1010,1011)))
