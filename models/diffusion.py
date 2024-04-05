@@ -941,7 +941,7 @@ if __name__ == "__main__":
             ddp_setup(rank, world_size=world_size)
 
         train(netG=netG, epochs=total_epochs, T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr,
-                batch_size=batch_size, gpu_id=0)
+                batch_size=batch_size, gpu_id=rank)
         if world_size > 1:
             destroy_process_group()
 
