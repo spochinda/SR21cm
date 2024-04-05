@@ -931,6 +931,9 @@ if __name__ == "__main__":
             #netG.loss.append(losses_epoch)
             
 
+
+
+
     world_size = torch.cuda.device_count()
     multi_gpu = world_size > 1
 
@@ -947,6 +950,8 @@ if __name__ == "__main__":
 
     if multi_gpu:
         print("Using multi_gpu", flush=True)
+        for i in range(torch.cuda.device_count()):
+            print("Device {i}: ", torch.cuda.get_device_properties(i).name)
         mp.spawn(main, args=(world_size, 1, 2*cut_factor), nprocs=world_size)
     else:
         print("Not using multi_gpu",flush=True)
