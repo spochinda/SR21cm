@@ -934,8 +934,7 @@ if __name__ == "__main__":
 
 
 
-    world_size = torch.cuda.device_count()
-    multi_gpu = world_size > 1
+    
 
     ###START main pytorch multi-gpu tutorial###
     def main(rank, world_size=0, total_epochs = 1, batch_size = 2*cut_factor):
@@ -947,12 +946,16 @@ if __name__ == "__main__":
                 batch_size=batch_size, gpu_id=rank)
         if world_size > 1:
             destroy_process_group()
-
+    ###END main pytorch multi-gpu tutorial###
+    
+    world_size = torch.cuda.device_count()
+    multi_gpu = world_size > 1
+    
     if multi_gpu:
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {i}: ", torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 1, 2*cut_factor), nprocs=world_size)
+        mp.spawn(main, args=(world_size, 1, 4), nprocs=world_size)
     else:
         print("Not using multi_gpu",flush=True)
         main(rank=0, world_size=0, total_epochs=1, batch_size=2*cut_factor)
