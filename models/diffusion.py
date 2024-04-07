@@ -1,3 +1,20 @@
+import torch.multiprocessing as mp
+from torch.utils.data.distributed import DistributedSampler
+from torch.nn.parallel import DistributedDataParallel as DDP
+from torch.distributed import init_process_group, destroy_process_group
+
+def ddp_setup(rank: int, world_size: int):
+    try:
+        os.environ["MASTER_ADDR"] #check if master address exists
+    except:
+        os.environ["MASTER_ADDR"] = "localhost"
+    
+    os.environ["MASTER_PORT"] = "12355"
+    torch.cuda.set_device(rank)
+    init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
+    
+
+    
 import os
 import numpy as np
 import matplotlib.pyplot as plt
@@ -11,15 +28,17 @@ from torch.nn import init
 from math import log
 from torch_ema import ExponentialMovingAverage
 
-device = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "mps"
-    if torch.backends.mps.is_available()
-    else "cpu"
-)
-device="cpu" #because 3D convolutions are not supported on MPS
-print(f"Using {device} device", flush=True)
+from utils import DataManager
+
+#device = (
+#    "cuda"
+#    if torch.cuda.is_available()
+#    else "mps"
+#    if torch.backends.mps.is_available()
+#    else "cpu"
+#)
+#device="cpu" #because 3D convolutions are not supported on MPS
+#print(f"Using {device} device", flush=True)
 
 class Swish(nn.Module):
     def forward(self, x):
@@ -362,10 +381,15 @@ class GaussianDiffusion(nn.Module):
         noise_schedule=None,
         noise_schedule_opt=None,
         learning_rate=1e-4,
-        multi_gpu=False,
+        rank = 0,
     ):
         super().__init__()
-        self.model = model(**model_opt) if not multi_gpu else DDP(model(**model_opt), device_ids=[gpu_id])
+        self.multi_gpu = torch.cuda.device_count() > 1 
+        if self.multi_gpu:
+            self.device = torch.device(f'cuda:{rank}')
+        else:
+            self.device = "cpu"
+        self.model = model(**model_opt) if not self.multi_gpu else DDP(model(**model_opt).to(self.device), device_ids=[rank])
         #self.model_opt = model_opt
         init_weights(self.model, init_type='orthogonal')
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
@@ -380,11 +404,12 @@ class GaussianDiffusion(nn.Module):
 
     def set_new_noise_schedule(self, noise_schedule_opt):
 
-        self.betas = self.noise_schedule(**self.noise_schedule_opt)
+        self.betas = self.noise_schedule(**self.noise_schedule_opt).to(self.device)
         self.timesteps, = self.betas.shape
         self.alphas = 1. - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.alphas_cumprod_prev = torch.tensor(np.append(1., self.alphas_cumprod[:-1]), dtype=torch.float32) #need to specify dtype because np.append with 1. is float64
+        self.alphas_cumprod_prev = torch.cat((torch.tensor([1.], dtype=torch.float32, device=self.device), self.alphas_cumprod[:-1]))
+        #self.alphas_cumprod_prev = torch.tensor(np.append(1., self.alphas_cumprod[:-1]), dtype=torch.float32) #need to specify dtype because np.append with 1. is float64
         
         # calculations for posterior q(x_{t-1} | x_t, x_0)
         self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
@@ -400,7 +425,7 @@ class GaussianDiffusion(nn.Module):
         b,(*d) = x0.shape
         t=torch.tensor(t).view(b,*[1]*len(d))
         alphas_cumprod_t = self.alphas_cumprod[t]
-        noise = torch.randn_like(x0) if noise==None else noise
+        noise = torch.randn_like(x0, device=self.device) if noise==None else noise
         x_t = torch.sqrt(alphas_cumprod_t) * x0 + torch.sqrt(1 - alphas_cumprod_t) * noise
         return x_t, noise
 
@@ -572,16 +597,29 @@ class GaussianDiffusion(nn.Module):
             return x_sequence[:,-1]
         
     def save_network(self, path):
-        torch.save(
-            obj = dict(
-                model = self.model.state_dict(), 
-                optimizer = self.optG.state_dict(),# epoch = e ),
-                ema = self.ema.state_dict(),
-                loss = self.loss,
-                losses_validation_history = self.losses_validation_history,
-                noise_schedule_opt = self.noise_schedule_opt),
-                f = path
-                )
+        if not self.multi_gpu:
+            torch.save(
+                obj = dict(
+                    model = self.model.state_dict(), 
+                    optimizer = self.optG.state_dict(),# epoch = e ),
+                    ema = self.ema.state_dict(),
+                    loss = self.loss,
+                    losses_validation_history = self.losses_validation_history,
+                    noise_schedule_opt = self.noise_schedule_opt),
+                    f = path
+                    )
+        else:
+            if self.device == "cuda:0":
+                torch.save(
+                    obj = dict(
+                        model = self.model.module.state_dict(), 
+                        optimizer = self.optG.state_dict(),# epoch = e ),
+                        #ema = self.ema.state_dict(),
+                        #loss = self.loss,
+                        #losses_validation_history = self.losses_validation_history,
+                        noise_schedule_opt = self.noise_schedule_opt),
+                        f = path
+                        )
 
     def load_network(self, path):
         loaded_state = torch.load(path)
@@ -633,7 +671,14 @@ def all_rotations(x):
     return np.array(corner1 + corner2)
 
 def random_rotations(x, n=1):
+    if torch.cuda.device_count() > 1:
+        device = torch.device(f'cuda:{rank}')
+    else:
+        device = "cpu"
+
     N = np.random.choice(np.arange(0,24), size=n,replace=False)
+    N = torch.tensor(N, device=device)
+
     rotations = all_rotations(x)
     return rotations[N]
 
@@ -753,110 +798,131 @@ def init_weights(net, init_type='orthogonal'):
     if init_type == 'orthogonal':
         net.apply(weights_init_orthogonal)
 
-if __name__ == "__main__":
-    from utils import DataManager
-
-    path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
-
-
-    #Load training data
-    upscale = 4 #upscale factor
-    cut_factor = 4 #cut into smaller training cubes
-
-    Data = DataManager(path, redshifts=[10,], IC_seeds=list(range(1000,1002)))
+def prepare_data(path, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1002)), rank=0, ):
+    
+    if torch.cuda.device_count() > 1:
+        device = torch.device(f'cuda:{rank}')
+    else:
+        device = "cpu"
+    # Load training data
+    Data = DataManager(path, redshifts=[redshift,], IC_seeds=IC_seeds)
     T21, delta, vbv = Data.load()
 
-    #convert to pytorch
-    T21 = torch.from_numpy(T21)
-    delta = torch.from_numpy(delta)
-    vbv = torch.from_numpy(vbv)
-   
-    T21 = T21.permute(0,4,1,2,3) #convert from 8,128,128,128,1 to 8,1,128,128,128
-    delta = delta.unsqueeze(1) #Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
+    # Convert to pytorch
+    T21 = torch.from_numpy(T21).to(device)
+    delta = torch.from_numpy(delta).to(device)
+    vbv = torch.from_numpy(vbv).to(device)
+    
+    T21 = T21.permute(0,4,1,2,3) # Convert from 8,128,128,128,1 to 8,1,128,128,128
+    delta = delta.unsqueeze(1) # Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
     vbv = vbv.unsqueeze(1)
-    T21_lr = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
+    T21_lr = torch.nn.functional.interpolate( # Define low resolution input that has been downsampled and upsampled again
         torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
         scale_factor=upscale, mode='trilinear')
 
-    
-    
     T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
     delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
     vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
     T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
     
-    T21 = normalize(T21)#[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
-    delta = normalize(delta)#[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
-    vbv = normalize(vbv)#[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
-    T21_lr = normalize(T21_lr)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
+    T21 = normalize(T21)
+    delta = normalize(delta)
+    vbv = normalize(vbv)
+    T21_lr = normalize(T21_lr)
     
+    return T21, delta, vbv, T21_lr
 
+def train(netG, epochs, batch_size=2*4, rank=0,
+          upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1002))):
     """
-
-    #Load validation data
-    Data_validation = DataManager(path, redshifts=[10,], IC_seeds=list(range(1010,1011)))
-    T21_validation, delta_validation, vbv_validation = Data_validation.load()
-
-    #convert to pytorch
-    T21_validation = torch.from_numpy(T21_validation)
-    delta_validation = torch.from_numpy(delta_validation)
-    vbv_validation = torch.from_numpy(vbv_validation)
-   
-    T21_validation = T21_validation.permute(0,4,1,2,3) #convert from 8,128,128,128,1 to 8,1,128,128,128
-    delta_validation = delta_validation.unsqueeze(1) #Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
-    vbv_validation = vbv_validation.unsqueeze(1)
-    T21_lr_validation = torch.nn.functional.interpolate( #define low resolution input that has been downsampled and upsampled again
-        torch.nn.functional.interpolate(T21_validation, scale_factor=1/upscale, mode='trilinear'),
-        scale_factor=upscale, mode='trilinear')
-
-    T21_validation = get_subcubes(cubes=T21_validation, cut_factor=cut_factor)
-    delta_validation = get_subcubes(cubes=delta_validation, cut_factor=cut_factor)
-    vbv_validation = get_subcubes(cubes=vbv_validation, cut_factor=cut_factor)
-    T21_lr_validation = get_subcubes(cubes=T21_lr_validation, cut_factor=cut_factor)
-    
-    T21_validation = normalize(T21_validation)#[:,:,:T21.shape[2]//reduce_dim,:T21.shape[3]//reduce_dim,:T21.shape[4]//reduce_dim] #train on reduce_dim dimensions
-    delta_validation = normalize(delta_validation)#[:,:,:delta.shape[2]//reduce_dim,:delta.shape[3]//reduce_dim,:delta.shape[4]//reduce_dim]
-    vbv_validation = normalize(vbv_validation)#[:,:,:vbv.shape[2]//reduce_dim,:vbv.shape[3]//reduce_dim,:vbv.shape[4]//reduce_dim]
-    T21_lr_validation = normalize(T21_lr_validation)#[:,:,:T21_lr.shape[2]//reduce_dim,:T21_lr.shape[3]//reduce_dim,:T21_lr.shape[4]//reduce_dim]
-    
-    dataset_validation = torch.utils.data.TensorDataset(T21_validation, delta_validation, vbv_validation, T21_lr_validation)
-    loader_validation = torch.utils.data.DataLoader( dataset_validation, batch_size=2*cut_factor, shuffle=True)
-
-    
-
-
+    Train the model
     """
+    netG.model.train()
+    multi_gpu = torch.cuda.device_count() > 1
+    if multi_gpu:
+        device = torch.device(f'cuda:{rank}')
+    else:
+        device = "cpu"
+    print("Multi GPU: ", multi_gpu)
+
+    ###START load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
+    path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
+    model_i = "20"
+    model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
     
-    import torch.multiprocessing as mp
-    from torch.utils.data.distributed import DistributedSampler
-    from torch.nn.parallel import DistributedDataParallel as DDP
-    from torch.distributed import init_process_group, destroy_process_group
-    
-    def ddp_setup(rank: int, world_size: int):
-        os.environ["MASTER_ADDR"] = "localhost"
-        os.environ["MASTER_PORT"] = "12355"
-        torch.cuda.set_device(rank)
-        init_process_group(backend="nccl", rank=rank, world_size=world_size)
-    """
-    T21_aug, delta_aug, vbv_aug, T21_lr_aug = augment_dataset(T21, delta, vbv, T21_lr, n=1)
-    dataset = torch.utils.data.TensorDataset(T21_aug, delta_aug, vbv_aug, T21_lr_aug)
-    loader = torch.utils.data.DataLoader( dataset, batch_size=2*cut_factor, shuffle=False, sampler=DistributedSampler(dataset)) #multi_gpu
-    loader.sampler.set_epoch(0)
-    
-    def main(rank, world_size, total_epochs, save_every):
-        ddp_setup(rank, world_size)
-        dataset, model, optimizer = load_train_objs()
-        train_data = prepare_dataloader(dataset, batch_size=32)
-        trainer = Trainer(model, train_data, optimizer, device, save_every)
-        trainer = Trainer(model, train_data, optimizer, rank, save_every)
-        trainer.train(total_epochs)
-        destroy_process_group()
-    """
+    T21, delta, vbv, T21_lr = prepare_data(path, upscale=upscale, cut_factor=cut_factor, redshift=redshift, IC_seeds=IC_seeds, rank=rank)
+    dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
+    train_data = torch.utils.data.DataLoader( dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(dataset) if multi_gpu else None) #4
+    ###END load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
+    for e in range(epochs):
+        
+        #stime = time.time()
+        
+        avg_batch_loss = torch.tensor(0.0, device=device)
 
 
 
-    
+        ###START _run_epoch pytorch multi-gpu tutorial###
+        #b_sz = len(train_data[0])
+        
+        if multi_gpu:
+            #print(f"[GPU{rank}] Epoch {e} ")
+            print(f"[GPU{rank}] Epoch {e} | Batchsize: None | Steps: {len(train_data)}")
+            train_data.sampler.set_epoch(e)
+        for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
+            #if rank==0:
+            #    print("Shapes: ", T21_.shape, delta_.shape, vbv_.shape, T21_lr_.shape)
+            #T21_,delta_,vbv_, T21_lr_ = augment_dataset(T21_,delta_,vbv_, T21_lr_, n=1) #support device
+            ###START _run_batch pytorch multi-gpu tutorial###
 
+            netG.optG.zero_grad()
+            
+            ts = torch.randint(low = 0, high = netG.timesteps, size = (train_data.batch_size // 2 + 1, ), device=device)
+            ts = torch.cat([ts, netG.timesteps - ts - 1], dim=0)[:train_data.batch_size] # antithetic sampling
+            alphas_cumprod = netG.alphas_cumprod[ts]     
+            xt, target_noise = netG.q_sample(T21_, ts)
+            X = torch.cat([xt, delta_, vbv_, T21_lr_], dim = 1)
+            predicted_noise = netG.model(X, alphas_cumprod)
+            loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise) # torch.nn.L1Loss(reduction='mean')(target_noise, predicted_noise) 
+            
+            avg_batch_loss += loss / len(train_data)
+
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
+            netG.optG.step()
+            ###END _run_batch pytorch multi-gpu tutorial###
+            ###END _run_epoch pytorch multi-gpu tutorial###
+            
+
+            #losses.append(loss.item())
+            if rank==0:
+                if True: #i%(len(train_data)//16) == 0:
+                    print(f"Batch {i} of {len(train_data)} batches")
+
+            #netG.ema.update() #Update netG.model with exponential moving average
+        print("GPU{0} loss: {1:.4f}".format(rank, avg_batch_loss.item()))
+        if multi_gpu:
+            avg_batch_loss = torch.distributed.all_reduce(tensor=avg_batch_loss, op=torch.distributed.ReduceOp.AVG)
+            print("GPU{0} loss: {1:.4f}".format(rank, avg_batch_loss.item()))
+
+        
+        netG.loss.append(avg_batch_loss.item())
+
+        if avg_batch_loss.item() == torch.min(torch.tensor(netG.loss)).item():
+            if rank == 0:
+                print("Saving model", flush=True)
+                #netG.save_network(model_path)
+
+
+
+###START main pytorch multi-gpu tutorial###
+def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4):
+    
+    if world_size > 1:
+        ddp_setup(rank, world_size=world_size)
+    else:
+        print("If not using multi_gpu rank can be set arbitrarily", flush=True)
+    
     #optimizer and model
     model = UNet
     model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=16, dim=3)#T21.shape[-1], dim=3)
@@ -869,99 +935,38 @@ if __name__ == "__main__":
             noise_schedule=cosine_beta_schedule,#linear_beta_schedule,#
             noise_schedule_opt=noise_schedule_opt,
             learning_rate=1e-4,
-            multi_gpu=torch.cuda.device_count() > 1,
+            rank=rank,
         )
-    
-    
-    def train(netG, epochs, T21, delta, vbv, T21_lr, batch_size=2*cut_factor, gpu_id=0):
-        """
-        Train the model
-        """
-        netG.model.train()
-        multi_gpu = torch.cuda.device_count() > 1
-        print("Multi GPU: ", multi_gpu)
 
-        ###START load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
-        dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-        train_data = torch.utils.data.DataLoader( dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(dataset) if multi_gpu else None) #4
-        ###END load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
-        for e in range(epochs):
-            
-            #stime = time.time()
-            #losses = []
-
-
-
-            ###START _run_epoch pytorch multi-gpu tutorial###
-            #b_sz = len(next(iter(self.train_data))[0])
-            #print(f"[GPU{self.gpu_id}] Epoch {epoch} | Batchsize: {b_sz} | Steps: {len(self.train_data)}")
-            if multi_gpu:
-                print(f"[GPU{gpu_id}] Epoch {e} ")
-                train_data.sampler.set_epoch(e)
-            
-            for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
-                T21_,delta_,vbv_, T21_lr_ = augment_dataset(T21_,delta_,vbv_, T21_lr_, n=1)
-                ###START _run_batch pytorch multi-gpu tutorial###
-
-                netG.optG.zero_grad()
-                
-                ts = torch.randint(low = 0, high = netG.timesteps, size = (train_data.batch_size // 2 + 1, ))
-                ts = torch.cat([ts, netG.timesteps - ts - 1], dim=0)[:train_data.batch_size] # antithetic sampling
-                alphas_cumprod = netG.alphas_cumprod[ts]     
-                xt, target_noise = netG.q_sample(T21_, ts)
-                X = torch.cat([xt, delta_, vbv_, T21_lr_], dim = 1)
-                predicted_noise = netG.model(X, alphas_cumprod)
-                loss = nn.MSELoss(reduction='mean')(target_noise, predicted_noise) # torch.nn.L1Loss(reduction='mean')(target_noise, predicted_noise) 
-                
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
-                netG.optG.step()
-                ###END _run_batch pytorch multi-gpu tutorial###
-                ###END _run_epoch pytorch multi-gpu tutorial###
-
-
-
-                #losses.append(loss.item())
-                if i%(len(train_data)//16) == 0:
-                    print(f"Batch {i} of {len(train_data)} batches")
-
-                #netG.ema.update() #Update netG.model with exponential moving average
-
-            #losses_epoch = np.mean(losses)
-            #netG.loss.append(losses_epoch)
-            
-
-
-
+    train(netG=netG, epochs=total_epochs,
+            batch_size=batch_size, rank=rank)
 
     
+    if world_size > 1:
+        destroy_process_group()
+###END main pytorch multi-gpu tutorial###
 
-    ###START main pytorch multi-gpu tutorial###
-    def main(rank, world_size=0, total_epochs = 1, batch_size = 2*cut_factor):
-        print("If not using multi_gpu rank can be set arbitrarily", flush=True)
-        if world_size > 1:
-            ddp_setup(rank, world_size=world_size)
 
-        train(netG=netG, epochs=total_epochs, T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr,
-                batch_size=batch_size, gpu_id=rank)
-        if world_size > 1:
-            destroy_process_group()
-    ###END main pytorch multi-gpu tutorial###
-    
+
+if __name__ == "__main__":
+   
     world_size = torch.cuda.device_count()
     multi_gpu = world_size > 1
-    
+
     if multi_gpu:
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
-            print("Device {i}: ", torch.cuda.get_device_properties(i).name)
+            print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
         mp.spawn(main, args=(world_size, 1, 4), nprocs=world_size)
     else:
         print("Not using multi_gpu",flush=True)
-        main(rank=0, world_size=0, total_epochs=1, batch_size=2*cut_factor)
-
+        main(rank=0, world_size=0, total_epochs=1, batch_size=2*4)
     
         
+
+
+        
+            
 
     
 
