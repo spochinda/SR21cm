@@ -1065,6 +1065,7 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
         #print("Saving model now. Loss history is: ", netG.losses_validation_history)
         ##netG.save_network(model_path)
 
+#test new repo name local
 
 ###START main pytorch multi-gpu tutorial###
 def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4):
