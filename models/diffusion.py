@@ -1066,6 +1066,7 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
         ##netG.save_network(model_path)
 
 #test new repo name local
+#test new repo name hpc
 
 ###START main pytorch multi-gpu tutorial###
 def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4):
