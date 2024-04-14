@@ -9,7 +9,7 @@ def ddp_setup(rank: int, world_size: int):
     except:
         os.environ["MASTER_ADDR"] = "localhost"
     
-    os.environ["MASTER_PORT"] = "12356"
+    os.environ["MASTER_PORT"] = "12355"
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
     
@@ -880,7 +880,8 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     
     if multi_gpu:
         #print(f"[GPU{rank}] Epoch {e} ")
-        print(f"[{device}] Epoch {epoch} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}")
+        if (str(device)=="cuda:0"):
+            print(f"[{device}] Epoch {epoch} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}")
         train_data.sampler.set_epoch(epoch)
     for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
         #if (str(device)=="cpu") or (str(device)=="cuda:0"):
@@ -910,8 +911,8 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
         
 
         #losses.append(loss.item())
-        if (device=="cuda:0") or (device=="cpu"):
-            if True: #i%(len(train_data)//16) == 0:
+        if (str(device)=="cuda:0") or (str(device)=="cpu"):
+            if False: #i%(len(train_data)//16) == 0:
                 print(f"Batch {i} of {len(train_data)} batches")
 
         #netG.ema.update() #Update netG.model with exponential moving average
@@ -997,6 +998,8 @@ def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, path = None, device="
 
 
 def validation_step(netG, validation_data, validation_type="DDIM", validation_loss_type="dsq", device="cpu", multi_gpu=False):
+    netG.model.eval()
+    
     #validation_type = "DDIM" # or "DDPM SR3" or "DDPM Classic" or "None" (to save at every minimum training loss)
     #validation_loss_type = "dsq" # or voxel
 
@@ -1069,7 +1072,7 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
 #test new repo name hpc
 
 ###START main pytorch multi-gpu tutorial###
-def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4):
+def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=20):
     
     multi_gpu = world_size > 1
 
@@ -1084,23 +1087,25 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4):
 
 
     #optimizer and model
-    path = os.getcwd().split("/21cmGAN")[0] + "/21cmGAN"
+    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
     model = UNet
     model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=16, dim=3)#T21.shape[-1], dim=3)
-    noise_schedule_opt = dict(timesteps = 1000, s = 0.008) #dict(timesteps = 1000, beta_start = 1e-6, beta_end = 1e-2) #21cm ddpm ###
+    #noise_schedule_opt = dict(timesteps = 1000, s = 0.008) #cosine schedule
+    noise_schedule_opt = dict(timesteps = 1000, beta_start = 1e-6, beta_end = 1e-2) #linear 21cm ddpm 
 
     netG = GaussianDiffusion(
             model=model,
             model_opt=model_opt,
             loss_type='l1',
-            noise_schedule=cosine_beta_schedule,#linear_beta_schedule,#
+            #noise_schedule=cosine_beta_schedule,
+            noise_schedule=linear_beta_schedule,
             noise_schedule_opt=noise_schedule_opt,
             learning_rate=1e-4,
             rank=rank,
         )
 
-    train_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1002)), device=device, multi_gpu=multi_gpu)
-    validation_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1010,1011)), device=device, multi_gpu=multi_gpu)
+    train_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1008)), device=device, multi_gpu=multi_gpu)
+    validation_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1008,1011)), device=device, multi_gpu=multi_gpu)
 
     for e in range(total_epochs):
         avg_batch_loss = train_step(netG=netG, epoch=e, train_data=train_data, device=device, multi_gpu=multi_gpu)
@@ -1118,8 +1123,8 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4):
                             
                         #print("Saving model", flush=True)
                         #[x.cpu() for x in input_output]
-                        plot_checkpoint(*input_output, path = path + f"/trained_models/diffusion_epoch_{e}_model_20.png", device="cpu")
-                        netG.save_network( path + "/trained_models/diffusion_model_test_20.pth"  )
+                        plot_checkpoint(*input_output, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
+                        netG.save_network( path + f"/trained_models/diffusion_model_test_{model_id}.pth"  )
                     else:
                         print("Not saving model. Validaiton did not improve", flush=True)
 
@@ -1139,7 +1144,7 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 1000, 16), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        mp.spawn(main, args=(world_size, 1000, 16, 21), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
         main(rank=0, world_size=0, total_epochs=1, batch_size=8)#2*4)
