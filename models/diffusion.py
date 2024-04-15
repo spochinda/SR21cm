@@ -31,16 +31,6 @@ from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
 
 from utils import DataManager
 
-#device = (
-#    "cuda"
-#    if torch.cuda.is_available()
-#    else "mps"
-#    if torch.backends.mps.is_available()
-#    else "cpu"
-#)
-#device="cpu" #because 3D convolutions are not supported on MPS
-#print(f"Using {device} device", flush=True)
-
 class Swish(nn.Module):
     def forward(self, x):
         return x * torch.sigmoid(x)
@@ -371,46 +361,64 @@ def linear_beta_schedule(timesteps, beta_start = 0.0001, beta_end = 0.02):
     beta_schedule = torch.linspace(beta_start, beta_end, timesteps)
     return beta_schedule
 
+def beta_schedule(schedule_type = "cosine", schedule_opt = {}):
+    if schedule_type == "cosine":
+        return cosine_beta_schedule(**schedule_opt)
+    elif schedule_type == "linear":
+        return linear_beta_schedule(**schedule_opt)
+    else:
+        raise ValueError("schedule_type must be one of ['cosine', 'linear']")
+
 
 
 class GaussianDiffusion(nn.Module):
     def __init__(
         self,
-        model,
-        model_opt,
-        loss_type='l1',
-        noise_schedule=None,
-        noise_schedule_opt=None,
+        network,
+        network_opt,
+        beta_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}},
         learning_rate=1e-4,
         rank = 0,
     ):
         super().__init__()
+        
+        self.rank = rank
         self.multi_gpu = torch.cuda.device_count() > 1 
+
         if self.multi_gpu:
-            self.device = torch.device(f'cuda:{rank}')
+            self.device = torch.device(f'cuda:{self.rank}')
         else:
             self.device = "cpu"
-        self.model = model(**model_opt) if not self.multi_gpu else DDP(model(**model_opt).to(self.device), device_ids=[rank])
-        #self.model_opt = model_opt
+        
+        
+        self.network = network
+        self.network_opt = network_opt
+        self.model = self.network(**self.network_opt).to(self.device)
         init_weights(self.model, init_type='orthogonal')
+        if self.multi_gpu:
+            self.model = DDP(self.model, device_ids=[rank])
+
+        
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.995)
         self.loss = []
         self.losses_validation_history = []
-        self.loss_type = loss_type
-        self.noise_schedule = noise_schedule
-        self.noise_schedule_opt = noise_schedule_opt
-        if noise_schedule is not None:
-            self.set_new_noise_schedule(noise_schedule_opt)
+        self.beta_schedule_opt = beta_schedule_opt
+        #self.noise_schedule = noise_schedule
+        #self.noise_schedule_opt = noise_schedule_opt
+        #if noise_schedule is not None:
+        #    self.set_new_noise_schedule(noise_schedule_opt)
+        self.set_new_noise_schedule()
 
-    def set_new_noise_schedule(self, noise_schedule_opt):
+    def set_new_noise_schedule(self):
+        self.betas = beta_schedule(**self.beta_schedule_opt).to(self.device)
 
-        self.betas = self.noise_schedule(**self.noise_schedule_opt).to(self.device)
         self.timesteps, = self.betas.shape
         self.alphas = 1. - self.betas
         self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
         self.alphas_cumprod_prev = torch.cat((torch.tensor([1.], dtype=torch.float32, device=self.device), self.alphas_cumprod[:-1]))
         #self.alphas_cumprod_prev = torch.tensor(np.append(1., self.alphas_cumprod[:-1]), dtype=torch.float32) #need to specify dtype because np.append with 1. is float64
+        self.betas = beta_schedule(**self.beta_schedule_opt).to(self.device) #self.noise_schedule(**self.noise_schedule_opt).to(self.device)
         
         # calculations for posterior q(x_{t-1} | x_t, x_0)
         self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
@@ -601,12 +609,14 @@ class GaussianDiffusion(nn.Module):
         if not self.multi_gpu:
             torch.save(
                 obj = dict(
+                    network_opt = self.network_opt,
                     model = self.model.state_dict(), 
                     optimizer = self.optG.state_dict(),# epoch = e ),
-                    ema = self.ema.state_dict(),
+                    #ema = self.ema.state_dict(),
                     loss = self.loss,
                     losses_validation_history = self.losses_validation_history,
-                    noise_schedule_opt = self.noise_schedule_opt),
+                    #noise_schedule_opt = self.noise_schedule_opt),
+                    beta_schedule_opt = self.beta_schedule_opt),
                     f = path
                     )
         else:
@@ -614,28 +624,30 @@ class GaussianDiffusion(nn.Module):
                 print("Saving model", flush=True)
                 torch.save(
                     obj = dict(
+                        network_opt = self.network_opt,
                         model = self.model.module.state_dict(), 
                         optimizer = self.optG.state_dict(),# epoch = e ),
                         #ema = self.ema.state_dict(),
                         loss = self.loss,
                         losses_validation_history = self.losses_validation_history,
-                        noise_schedule_opt = self.noise_schedule_opt),
+                        #noise_schedule_opt = self.noise_schedule_opt),
+                        beta_schedule_opt = self.beta_schedule_opt),
                         f = path
                         )
 
     def load_network(self, path):
         loaded_state = torch.load(path)
+        self.network_opt = loaded_state['network_opt']
+        self.model = self.network(**self.network_opt)
         self.model.load_state_dict(loaded_state['model'])
+        if self.multi_gpu:
+            self.model.to(self.device)
+            self.model = DDP(self.model, device_ids=[self.rank])
         self.optG.load_state_dict(loaded_state['optimizer'])
-        self.ema.load_state_dict(loaded_state['ema'])
         self.loss = loaded_state['loss']
-        try:
-            self.noise_schedule_opt = loaded_state['noise_schedule_opt']
-            self.set_new_noise_schedule(self.noise_schedule_opt)
-            self.losses_validation_history = loaded_state['losses_validation_history']
-        except:
-            print("Noise schedule or losses_validation_history couldn't be loaded")
-            self.losses_validation_history = []
+        self.losses_validation_history = loaded_state['losses_validation_history']
+        self.beta_schedule_opt = loaded_state['beta_schedule_opt']
+        self.set_new_noise_schedule()
 
 
 
@@ -840,7 +852,7 @@ def prepare_dataloader(path, batch_size=2*4, upscale=4, cut_factor=4, redshift=1
     
     T21, delta, vbv, T21_lr = prepare_data(path, upscale=upscale, cut_factor=cut_factor, redshift=redshift, IC_seeds=IC_seeds, device=device)
     dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-    print("Prepare dataloader dataset shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
+    #print("Prepare dataloader dataset shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
     data = torch.utils.data.DataLoader( dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(dataset) if multi_gpu else None) #4
     ###END load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
     return data
@@ -879,10 +891,9 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     #b_sz = len(train_data[0])
     
     if multi_gpu:
-        #print(f"[GPU{rank}] Epoch {e} ")
-        if (str(device)=="cuda:0"):
-            print(f"[{device}] Epoch {epoch} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}")
-        train_data.sampler.set_epoch(epoch)
+        train_data.sampler.set_epoch(epoch) #fix for ddp loaded checkpoint?
+    if (str(device)=="cuda:0") or (str(device)=="cpu"):
+        print(f"[{device}] Epoch {len(netG.loss)} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}")
     for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
         #if (str(device)=="cpu") or (str(device)=="cuda:0"):
 
@@ -928,7 +939,7 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     return avg_batch_loss.item()
 
 
-def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, path = None, device="cpu"):
+def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, epoch=None, path = None, device="cpu"):
 
     fig = plt.figure(figsize=(15,15))
     gs = GS(3, 3, figure=fig,) #height_ratios=[1,1,1.5])
@@ -956,7 +967,7 @@ def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, path = None, device="
     ax_x_true.set_title("T21 HR (Real)")
     
     ax_x_pred.imshow(x_pred[0,-1,:,:,x_pred.shape[-1]//2], vmin=-1, vmax=1)
-    ax_x_pred.set_title("T21 SR (Generated)")
+    ax_x_pred.set_title(f"T21 SR (Generated) epoch {epoch}")
 
 
     #power spectrum
@@ -1072,7 +1083,7 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
 #test new repo name hpc
 
 ###START main pytorch multi-gpu tutorial###
-def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=20):
+def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
     
     multi_gpu = world_size > 1
 
@@ -1088,21 +1099,26 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=20):
 
     #optimizer and model
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
-    model = UNet
-    model_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=16, dim=3)#T21.shape[-1], dim=3)
-    #noise_schedule_opt = dict(timesteps = 1000, s = 0.008) #cosine schedule
-    noise_schedule_opt = dict(timesteps = 1000, beta_start = 1e-6, beta_end = 1e-2) #linear 21cm ddpm 
+    
+    network_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=16, dim=3)
+    beta_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
+    #beta_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
 
     netG = GaussianDiffusion(
-            model=model,
-            model_opt=model_opt,
-            loss_type='l1',
+            network=UNet,
+            network_opt=network_opt,
+            beta_schedule_opt=beta_schedule_opt,
             #noise_schedule=cosine_beta_schedule,
-            noise_schedule=linear_beta_schedule,
-            noise_schedule_opt=noise_schedule_opt,
+            #noise_schedule=linear_beta_schedule,
+            #noise_schedule_opt=noise_schedule_opt,
             learning_rate=1e-4,
             rank=rank,
         )
+
+    try:
+        netG.load_network(path + f"/trained_models/diffusion_model_test_{model_id}.pth")
+    except:
+        print("Failed to load network at {0}. Starting from scratch.".format(path + f"/trained_models/diffusion_model_test_{model_id}.pth"), flush=True)
 
     train_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1008)), device=device, multi_gpu=multi_gpu)
     validation_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1008,1011)), device=device, multi_gpu=multi_gpu)
@@ -1112,10 +1128,9 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=20):
 
         if avg_batch_loss == torch.min(torch.tensor(netG.loss)).item():
             
-            if len(netG.loss)>=100: #only start checking voxel loss after n epochs #change this when it works
+            if len(netG.loss)>=400: #only start checking voxel loss after n epochs #change this when it works
                 losses_validation, input_output = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq", device=device, multi_gpu=multi_gpu)
                 input_output = [x.cpu() for x in input_output] if multi_gpu else input_output
-
                 if (str(device)=="cuda:0") or (str(device)=="cpu"):
                     print("losses_validation: {0:.4f}, losses_validation_history minimum: {1:.4f}".format(losses_validation, torch.min(torch.tensor(netG.losses_validation_history)).item()))
                 
@@ -1123,7 +1138,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=20):
                             
                         #print("Saving model", flush=True)
                         #[x.cpu() for x in input_output]
-                        plot_checkpoint(*input_output, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
+                        plot_checkpoint(*input_output, epoch = e, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
                         netG.save_network( path + f"/trained_models/diffusion_model_test_{model_id}.pth"  )
                     else:
                         print("Not saving model. Validaiton did not improve", flush=True)
@@ -1144,10 +1159,10 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 1000, 16, 21), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        mp.spawn(main, args=(world_size, 1000, 16, 24), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
-        main(rank=0, world_size=0, total_epochs=1, batch_size=8)#2*4)
+        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=24)#2*4)
     
         
 
