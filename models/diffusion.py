@@ -1,4 +1,5 @@
 import torch.multiprocessing as mp
+import torch.utils
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -20,16 +21,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time 
+import pandas as pd
+from scipy.io import loadmat
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import init
 from math import log
-from torch_ema import ExponentialMovingAverage
 from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
 
-from utils import DataManager
+from torch_ema import ExponentialMovingAverage
+#from utils import DataManager
 
 class Swish(nn.Module):
     def forward(self, x):
@@ -636,7 +639,7 @@ class GaussianDiffusion(nn.Module):
                         )
 
     def load_network(self, path):
-        loaded_state = torch.load(path)
+        loaded_state = torch.load(path, map_location=self.device)
         self.network_opt = loaded_state['network_opt']
         self.model = self.network(**self.network_opt)
         self.model.load_state_dict(loaded_state['model'])
@@ -719,7 +722,7 @@ def augment_dataset(T21, delta, vbv, T21_lr, n=8):
     T21_lr = dataset[:,3:]
     return T21, delta, vbv, T21_lr
 
-def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="torch"):
+def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="torch", device="cpu"):
     #Simulation box variables
     batch, channel,(*d) = data_x.shape
     assert channel == 1, "Channel must be 1"
@@ -743,16 +746,16 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
         P_k = P_k*k_vals**3/(2*np.pi**2) if dsq else P_k
         return k_vals, P_k
     elif method == "torch":
-        kspace_torch = torch.fft.fftfreq(Npix, d=Lpix/(2*np.pi))
+        kspace_torch = torch.fft.fftfreq(Npix, d=Lpix/(2*np.pi), device=device)
         kx_torch, ky_torch, kz_torch = torch.meshgrid(kspace_torch,kspace_torch,kspace_torch)#.view(batch,channel,*d)
         k_torch = torch.sqrt(kx_torch**2 + ky_torch**2 + kz_torch**2)#.unsqueeze(0).unsqueeze(0).repeat(batch,1,*(len(d)*[1]))
         data_k_torch = torch.fft.fftn(input=data_x, dim=(2,3,4))
         kmin_mask_torch = k_torch > 0
         kmin_torch = torch.min(k_torch[kmin_mask_torch])
         kmax_torch = torch.max(k_torch)
-        k_bin_edges_torch = torch.logspace(start=torch.log10(kmin_torch), end=torch.log10(kmax_torch), steps=kbins+1)
-        k_vals_torch = torch.zeros(kbins)
-        P_k_torch = torch.zeros(batch,channel,kbins)
+        k_bin_edges_torch = torch.logspace(start=torch.log10(kmin_torch), end=torch.log10(kmax_torch), steps=kbins+1, device=device)
+        k_vals_torch = torch.zeros(kbins, device=device)
+        P_k_torch = torch.zeros(batch,channel,kbins, device=device)
         
         conditions = [(k_torch >= k_bin_edges_torch[i]) & (k_torch < k_bin_edges_torch[i+1]) for i in range(kbins)]
 
@@ -771,20 +774,23 @@ def normalize(x):
     x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
     x = (x - x_min) / (x_max - x_min)
     x = 2 * x - 1
-    return x
+    return x, [x_min, x_max]
 
-def get_subcubes(cubes, cut_factor):
-    batch, channel,(*d) = cubes.shape
-    image_size = d[0]//cut_factor
-    sub_cubes = []
-    for cube in cubes:
-        for i in range(cut_factor):
-            for j in range(cut_factor):
-                for k in range(cut_factor):
-                    sub_cube = cube[:,i*image_size:(i+1)*image_size,j*image_size:(j+1)*image_size,k*image_size:(k+1)*image_size]
-                    sub_cubes.append(sub_cube)
-    sub_cubes = torch.cat(sub_cubes, dim=0).unsqueeze(1)
-    return sub_cubes
+def get_subcubes(cubes, cut_factor=0):
+    if cut_factor > 0:
+        batch, channel,(*d) = cubes.shape
+        image_size = d[0]//(2**cut_factor)
+        sub_cubes = []
+        for cube in cubes:
+            for i in range(2**cut_factor):
+                for j in range(2**cut_factor):
+                    for k in range(2**cut_factor):
+                        sub_cube = cube[:,i*image_size:(i+1)*image_size,j*image_size:(j+1)*image_size,k*image_size:(k+1)*image_size]
+                        sub_cubes.append(sub_cube)
+        sub_cubes = torch.cat(sub_cubes, dim=0).unsqueeze(1)
+        return sub_cubes
+    else:
+        return cubes
 
 def weights_init_orthogonal(m):
     classname = m.__class__.__name__
@@ -815,7 +821,7 @@ def init_weights(net, init_type='orthogonal'):
     if init_type == 'orthogonal':
         net.apply(weights_init_orthogonal)
 
-def prepare_data(path, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1002)), device="cpu" ):
+def prepare_data(path, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1000,1002)), device="cpu" ):
     # Load training data
     Data = DataManager(path, redshifts=[redshift,], IC_seeds=IC_seeds)
     T21, delta, vbv = Data.load()
@@ -837,14 +843,14 @@ def prepare_data(path, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range
     vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
     T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
     
-    T21 = normalize(T21)
-    delta = normalize(delta)
-    vbv = normalize(vbv)
-    T21_lr = normalize(T21_lr)
+    T21, min_max_T21 = normalize(T21)
+    delta, min_max_delta = normalize(delta)
+    vbv, min_max_vbv = normalize(vbv)
+    T21_lr, min_max_T21_lr = normalize(T21_lr)
     
     return T21, delta, vbv, T21_lr
 
-def prepare_dataloader(path, batch_size=2*4, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1002)), device="cpu", multi_gpu=False):
+def prepare_dataloader(path, batch_size=2*4, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1000,1002)), device="cpu", multi_gpu=False):
     ###START load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
     
     #model_i = "20"
@@ -856,6 +862,137 @@ def prepare_dataloader(path, batch_size=2*4, upscale=4, cut_factor=4, redshift=1
     data = torch.utils.data.DataLoader( dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(dataset) if multi_gpu else None) #4
     ###END load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
     return data
+
+class CustomDataset(torch.utils.data.Dataset):
+    def __init__(self, path=os.getcwd().split("21cmGen")[0]+"21cmGen", redshifts=[10,], IC_seeds=list(range(1000,1008)), upscale=4, cut_factor=0, transform=False, device='cpu'):
+        self.device = device
+        self.path = path
+        self.redshifts = redshifts
+        self.IC_seeds = IC_seeds
+        self.upscale = upscale
+        self.cut_factor = cut_factor
+        self.df = self.getDataFrame(cut_factor=self.cut_factor)
+        
+        #self.labels = pd.read_csv(annotations_file)
+        #self.img_dir = img_dir
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.df)
+
+    def __getitem__(self, idx):
+        #get full cubes
+        #stime = time.time()
+        T21 = torch.from_numpy(loadmat(self.path+ "/outputs/" + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+        delta = torch.from_numpy(loadmat(self.path + "/IC/" + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+        vbv = torch.from_numpy(loadmat(self.path+ "/IC/" + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+        T21_lr = torch.nn.functional.interpolate( # Define low resolution input that has been downsampled and upsampled again
+            torch.nn.functional.interpolate(T21, scale_factor=1/self.upscale, mode='trilinear'),
+            scale_factor=self.upscale, mode='trilinear')
+        #print("load time: {0:.2f}".format(time.time()-stime))
+    
+        #get subcube according to subcube index
+        #stime = time.time()
+        if self.cut_factor > 0:
+            i = self.df["IC,z,subcube"].iloc[idx][-1]
+            T21 = get_subcubes(T21, self.cut_factor)[i:i+1]
+            delta = get_subcubes(delta, self.cut_factor)[i:i+1]
+            vbv = get_subcubes(vbv, self.cut_factor)[i:i+1]
+            T21_lr = get_subcubes(T21_lr, self.cut_factor)[i:i+1]
+        #print("subcube time: {0:.2f}".format(time.time()-stime))
+
+        #stime = time.time()
+        T21, min_max_T21 = normalize(T21)
+        delta, min_max_delta = normalize(delta)
+        vbv, min_max_vbv = normalize(vbv)
+        T21_lr, min_max_T21_lr = normalize(T21_lr)
+        #print("normalize time: {0:.2f}".format(time.time()-stime))
+        
+        #stime = time.time()
+        if self.transform: #rotate
+            print("Transforms disabled. Rotation augmentation in training loop", flush=True)
+            #T21,delta,vbv,T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1)
+        #print("augment time: {0:.2f}".format(time.time()-stime))
+
+        #select [0] so iterator can batch
+        T21 = T21[0]
+        delta = delta[0]
+        vbv = vbv[0]
+        T21_lr = T21_lr[0]
+        
+        return T21,delta,vbv,T21_lr
+    
+    def getDataFrame(self, cut_factor=0):
+        rows = []
+        for i in range((2**cut_factor)**3):
+            for IC_seed in self.IC_seeds:
+                for redshift in self.redshifts:
+                    row = [[IC_seed, redshift, i]] #[f"IC={IC_seed}, z={redshift}"]
+                    for file in os.listdir(self.path+"/outputs"):
+                        if 'T21_cube' in file:
+                            z = int(file.split('_')[2])
+                            IC = int(file.split('_')[7])
+                            if (z == redshift) and (IC == IC_seed):
+                                row.append(file)
+                    for file in os.listdir(self.path+'/IC'):
+                        if 'delta' in file:
+                            IC = int(file.split('delta')[1].split('.')[0])
+                            if IC == IC_seed:
+                                row.append(file)
+                    for file in os.listdir(self.path+'/IC'):
+                        if 'vbv' in file:
+                            IC = int(file.split('vbv')[1].split('.')[0])
+                            if IC == IC_seed:
+                                row.append(file)
+                    rows.append(row)
+        df = pd.DataFrame(rows, columns=['IC,z,subcube', 'T21', 'delta', 'vbv'])
+        
+        return df
+
+    def getFullDataset(self):
+        self.df = self.getDataFrame(cut_factor=0)
+
+        T21 = []
+        delta = []
+        vbv = []
+        T21_lr = []
+
+        for index, row in self.df.iterrows():
+            T21_file = row['T21']
+            delta_file = row['delta']
+            vbv_file = row['vbv']
+
+            T21_cube = torch.from_numpy(loadmat(self.path+ "/outputs/" + T21_file)["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+            delta_cube = torch.from_numpy(loadmat(self.path + "/IC/" + delta_file)["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+            vbv_cube = torch.from_numpy(loadmat(self.path+ "/IC/" + vbv_file)["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+            T21_lr_cube = torch.nn.functional.interpolate( 
+                torch.nn.functional.interpolate(T21_cube, scale_factor=1/self.upscale, mode='trilinear'),
+                scale_factor=self.upscale, mode='trilinear')
+        
+            T21.append(T21_cube)
+            delta.append(delta_cube)
+            vbv.append(vbv_cube)
+            T21_lr.append(T21_lr_cube)
+
+        T21 = torch.cat(T21, dim=0)
+        delta = torch.cat(delta, dim=0)
+        vbv = torch.cat(vbv, dim=0)
+        T21_lr = torch.cat(T21_lr, dim=0)
+
+        T21 = get_subcubes(T21, self.cut_factor)
+        delta = get_subcubes(delta, self.cut_factor)
+        vbv = get_subcubes(vbv, self.cut_factor)
+        T21_lr = get_subcubes(T21_lr, self.cut_factor)
+
+        T21, min_max_T21 = normalize(T21)
+        delta, min_max_delta = normalize(delta)
+        vbv, min_max_vbv = normalize(vbv)
+        T21_lr, min_max_T21_lr = normalize(T21_lr)
+
+        dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
+        return dataset
+
+        
 
 def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
           ):
@@ -897,8 +1034,6 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
         #if (str(device)=="cpu") or (str(device)=="cuda:0"):
 
-            
-        
         T21_,delta_,vbv_, T21_lr_ = augment_dataset(T21_,delta_,vbv_, T21_lr_, n=1) #support device
         ###START _run_batch pytorch multi-gpu tutorial###
 
@@ -939,7 +1074,23 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     return avg_batch_loss.item()
 
 
-def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, epoch=None, path = None, device="cpu"):
+def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = None, device="cpu"):
+    x_true, delta, vbv, x_true_lr = validation_data.dataset.tensors 
+    k_vals_true, dsq_true, k_vals_pred, dsq_pred = k_and_dsq
+    #send to cpu
+    x_true = x_true.cpu()
+    delta = delta.cpu()
+    vbv = vbv.cpu()
+    x_true_lr = x_true_lr.cpu()
+
+    x_pred = x_pred.cpu()
+    
+    k_vals_true = k_vals_true.cpu()
+    dsq_true = dsq_true.cpu()
+    k_vals_pred = k_vals_pred.cpu()
+    dsq_pred = dsq_pred.cpu()
+
+    i = torch.randint(0, x_true.shape[0], (1,)).item() #0
 
     fig = plt.figure(figsize=(15,15))
     gs = GS(3, 3, figure=fig,) #height_ratios=[1,1,1.5])
@@ -948,11 +1099,11 @@ def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, epoch=None, path = No
     ax_vbv = fig.add_subplot(gs[0,1])
     ax_x_true_lr = fig.add_subplot(gs[0,2])
 
-    ax_delta.imshow(delta[0,0,:,:,delta.shape[-1]//2], vmin=-1, vmax=1)
+    ax_delta.imshow(delta[i,0,:,:,delta.shape[-1]//2], vmin=-1, vmax=1)
     ax_delta.set_title("Delta (input)")
-    ax_vbv.imshow(vbv[0,0,:,:,vbv.shape[-1]//2], vmin=-1, vmax=1)
+    ax_vbv.imshow(vbv[i,0,:,:,vbv.shape[-1]//2], vmin=-1, vmax=1)
     ax_vbv.set_title("Vbv (input)")
-    ax_x_true_lr.imshow(x_true_lr[0,0,:,:,x_true_lr.shape[-1]//2], vmin=-1, vmax=1)
+    ax_x_true_lr.imshow(x_true_lr[i,0,:,:,x_true_lr.shape[-1]//2], vmin=-1, vmax=1)
     ax_x_true_lr.set_title("T21 LR (input)")
 
 
@@ -963,29 +1114,41 @@ def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, epoch=None, path = No
 
 
 
-    ax_x_true.imshow(x_true[0,0,:,:,x_true.shape[-1]//2], vmin=-1, vmax=1)
+    ax_x_true.imshow(x_true[i,0,:,:,x_true.shape[-1]//2], vmin=-1, vmax=1)
     ax_x_true.set_title("T21 HR (Real)")
     
-    ax_x_pred.imshow(x_pred[0,-1,:,:,x_pred.shape[-1]//2], vmin=-1, vmax=1)
+    ax_x_pred.imshow(x_pred[i,0,:,:,x_pred.shape[-1]//2], vmin=-1, vmax=1)
     ax_x_pred.set_title(f"T21 SR (Generated) epoch {epoch}")
 
 
     #power spectrum
-    k_vals_true, dsq_true = calculate_power_spectrum(x_true,Lpix=3, kbins=100, dsq = True, method="torch")
+    #k_vals_true, dsq_true = calculate_power_spectrum(x_true,Lpix=3, kbins=100, dsq = True, method="torch")
     
-    k_vals_pred, dsq_pred = calculate_power_spectrum(x_pred[:,-1:,:,:,:], Lpix=3, kbins=100, dsq = True, method="torch")
+    #k_vals_pred, dsq_pred = calculate_power_spectrum(x_pred[:,-1:,:,:,:], Lpix=3, kbins=100, dsq = True, method="torch")
 
     #k_vals_true_lr, dsq_true_lr = calculate_power_spectrum(x_true_lr, Lpix=3, kbins=100, dsq = True, method="torch")
 
     sgs = SGS(1,2, gs[2,:])
-    ax_dsq = fig.add_subplot(sgs[0])
+    sgs_dsq = SGS(2,1, sgs[0], height_ratios=[4,1], hspace=0, )
+    ax_dsq = fig.add_subplot(sgs_dsq[0])
+    ax_dsq.get_xaxis().set_visible(False)
+    ax_dsq_resid = fig.add_subplot(sgs_dsq[1], sharex=ax_dsq)
+    ax_dsq_resid.set_ylabel("|Residuals|")#("$\Delta^2(k)_\\mathrm{{SR}} - \Delta^2(k)_\\mathrm{{HR}}$")
+    ax_dsq_resid.set_xlabel("$k$")
+    ax_dsq_resid.set_yscale('log')
+    ax_dsq_resid.grid()
 
-    ax_dsq.plot(k_vals_true, dsq_true[0,0], label="T21 HR", ls='solid')
+    
+    #ax_dsq.plot(k_vals_true, dsq_pred[:,0].T, alpha=0.02, color='k', ls='solid')
+    ax_dsq.plot(k_vals_true, dsq_true[i,0], label="T21 HR", ls='solid', lw=2)
+    ax_dsq.plot(k_vals_pred, dsq_pred[i,0], label="T21 SR", ls='solid', lw=2)
 
-    ax_dsq.plot(k_vals_pred, dsq_pred[0,0], label="T21 SR", ls='dotted')
+    ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[:,0] - dsq_true[:,0]).T, color='k', alpha=0.02)
+    ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[i,0] - dsq_true[i,0]), lw=2, )
+
     
     ax_dsq.set_ylabel('$\Delta^2(k)_\\mathrm{{norm}}$')
-    ax_dsq.set_xlabel('$k$')
+    #ax_dsq.set_xlabel('$k$')
     ax_dsq.set_yscale('log')
     ax_dsq.grid()
     ax_dsq.legend()
@@ -993,8 +1156,8 @@ def plot_checkpoint(x_true, x_pred, x_true_lr, delta, vbv, epoch=None, path = No
 
 
     ax_hist = fig.add_subplot(sgs[1])
-    ax_hist.hist(x_pred[0,-1,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
-    ax_hist.hist(x_true[0,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
+    ax_hist.hist(x_pred[i,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
+    ax_hist.hist(x_true[i,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
     
     ax_hist.set_xlabel("Norm. $T_{{21}}$")
     ax_hist.set_ylabel("PDF")
@@ -1015,42 +1178,73 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
     #validation_loss_type = "dsq" # or voxel
 
     #if len(netG.loss)>=validation_epoch: #only start checking voxel loss after n epochs #change this when it works 
-    losses_validation = torch.tensor(0.0, device=device) #0 #avg_batch_loss = torch.tensor(0.0, device=device)
+    losses_validation_dsq = torch.tensor(0.0, device=device) #0 #avg_batch_loss = torch.tensor(0.0, device=device)
+    losses_validation_voxel = torch.tensor(0.0, device=device)
     #stime_ckpt = time.time()
 
     if validation_type == "DDIM":
-        #print(validation_type + " validation")
-        for i,(T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in enumerate(validation_data):
-        #for i, (T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_) in tqdm(enumerate(validation_data), total=len(validation_data)):
-            x_sequence, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation_, vbv_validation_, T21_lr_validation_], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=False, ddim_n_steps = 10, verbose=False, device=device)
-            
+
+        x_pred = []
+        dsq_true = []
+        dsq_pred = []
+        k_vals_true_i = None
+        k_vals_pred_i = None
+
+        for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
+        #for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
+            x_pred_i, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation, vbv_validation, T21_lr_validation], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=False, ddim_n_steps = 20, verbose=False, device=device)
+            x_pred.append(x_pred_i[:,-1:])
             if validation_loss_type == "dsq":
-                k_vals_true, dsq_true  = calculate_power_spectrum(T21_validation_, Lpix=3, kbins=100, dsq = True, method="torch")
-                k_vals_pred, dsq_pred  = calculate_power_spectrum(x_sequence[:,-1:], Lpix=3, kbins=100, dsq = True, method="torch")
-                losses_validation += torch.nanmean(torch.square(dsq_pred - dsq_true)) / len(validation_data)
+                k_vals_true_i, dsq_true_i  = calculate_power_spectrum(T21_validation, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+                k_vals_pred_i, dsq_pred_i  = calculate_power_spectrum(x_pred_i[:,-1:], Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+                dsq_true.append(dsq_true_i)
+                dsq_pred.append(dsq_pred_i)
+                losses_validation_dsq += torch.nanmean(torch.square(dsq_pred_i - dsq_true_i)) / len(validation_data)
+                losses_validation_voxel += torch.nanmean(torch.square(x_pred_i[:,-1:] - T21_validation)) / len(validation_data)
             elif validation_loss_type == "voxel":
-                losses_validation += torch.nanmean(torch.square(x_sequence[:,-1:] - T21_validation_)) / len(validation_data) #nn.MSELoss(reduction='mean')(x_sequence[:,-1:], T21_validation_).item()
+                losses_validation_dsq += torch.nanmean(torch.square(x_pred_i[:,-1:] - T21_validation)) / len(validation_data) #nn.MSELoss(reduction='mean')(x_sequence[:,-1:], T21_validation_).item()
             else:
                 assert False, "Validation loss type not recognized"
 
-
+        x_pred = torch.cat(x_pred, dim=0)
+        dsq_true = torch.cat(dsq_true, dim=0) if validation_loss_type == "dsq" else None
+        dsq_pred = torch.cat(dsq_pred, dim=0) if validation_loss_type == "dsq" else None
         #print("{0} loss: {1:.4f}".format(device, losses_validation.item()))
+
         if multi_gpu:
-            torch.distributed.all_reduce(tensor=losses_validation, op=torch.distributed.ReduceOp.AVG)
-            #print("{0} loss: {1:.4f}".format(device, losses_validation.item()))
+            #cat x_pred, dsq_true, dsq_pred, from gpus and share them
+            x_pred_tensor_list = [torch.zeros_like(x_pred) for _ in range(torch.distributed.get_world_size())]
+            dsq_true_tensor_list = [torch.zeros_like(dsq_true, device=device) for _ in range(torch.distributed.get_world_size())]
+            dsq_pred_tensor_list = [torch.zeros_like(dsq_pred, device=device) for _ in range(torch.distributed.get_world_size())]
 
+            torch.distributed.all_gather(tensor_list=x_pred_tensor_list, tensor=x_pred)
+            torch.distributed.all_gather(tensor_list=dsq_true_tensor_list, tensor=dsq_true)
+            torch.distributed.all_gather(tensor_list=dsq_pred_tensor_list, tensor=dsq_pred)
+            
+            x_pred = torch.cat(x_pred_tensor_list, dim=0)
+            dsq_true = torch.cat(dsq_true_tensor_list, dim=0) if validation_loss_type == "dsq" else None
+            dsq_pred = torch.cat(dsq_pred_tensor_list, dim=0) if validation_loss_type == "dsq" else None
 
+            torch.distributed.all_reduce(tensor=losses_validation_dsq, op=torch.distributed.ReduceOp.AVG)
+            torch.distributed.all_reduce(tensor=losses_validation_voxel, op=torch.distributed.ReduceOp.AVG)
+        if str(device)=="cuda:0":
+            print("Validation loss: {0:.4f}".format(losses_validation_dsq.item()), flush=True)
+            print("Validation voxel loss: {0:.4f}".format(losses_validation_voxel.item()*1e-1), flush=True)
+            
+            
+
+        total_loss = losses_validation_dsq + losses_validation_voxel * 1e-1
         #losses_validation /= len(validation_data)
-        netG.losses_validation_history.append(losses_validation.item())
+        netG.losses_validation_history.append(total_loss.item())
         #print("{0} loss {1:.4f} and time {2:.2f}".format(validation_type, losses_validation, time.time()-stime_ckpt))
         #save_bool = losses_validation == np.min(netG.losses_validation_history)
-    return losses_validation.item(), [T21_validation_, x_sequence, T21_lr_validation_, delta_validation_, vbv_validation_]
+    return total_loss, x_pred, [k_vals_true_i, dsq_true, k_vals_pred_i, dsq_pred]
         #elif (validation_type == "DDPM SR3") or (validation_type=="DDPM Classic"):
         #    print(validation_type + " validation")
-        #    T21_validation_, delta_validation_, vbv_validation_, T21_lr_validation_ = loader_validation.dataset.tensors
+        #    T21_validation_, delta_validation, vbv_validation, T21_lr_validation = loader_validation.dataset.tensors
         #    #pick random int from batch shape 0 of validation data
         #    i = torch.randint(low=0, high=T21_validation_.shape[0], size=(1,)).item()
-        #    x_sequence, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation_[i:i+1], vbv_validation_[i:i+1], T21_lr_validation_[i:i+1]], n_save=100, clip_denoised=True, mean_approach = validation_type, save_slices=False, ema=True, ddim_n_steps = 10, verbose=True)
+        #    x_sequence, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation[i:i+1], vbv_validation_[i:i+1], T21_lr_validation_[i:i+1]], n_save=100, clip_denoised=True, mean_approach = validation_type, save_slices=False, ema=True, ddim_n_steps = 10, verbose=True)
         #    
         #    if validation_loss_type == "dsq":
         #        k_vals_true, dsq_true  = calculate_power_spectrum(T21_validation_[i:i+1], Lpix=3, kbins=100, dsq = True, method="torch")
@@ -1100,9 +1294,9 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
     #optimizer and model
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
     
-    network_opt = dict(in_channel=4, out_channel=1, inner_channel=8, norm_groups=8, channel_mults=(1, 2, 2, 4, 4), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=16, dim=3)
-    beta_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
-    #beta_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
+    network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
+    #beta_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
+    beta_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
 
     netG = GaussianDiffusion(
             network=UNet,
@@ -1117,28 +1311,33 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
 
     try:
         netG.load_network(path + f"/trained_models/diffusion_model_test_{model_id}.pth")
+        print("Loaded network at {0}".format(path + f"/trained_models/diffusion_model_test_{model_id}.pth"), flush=True)
     except:
         print("Failed to load network at {0}. Starting from scratch.".format(path + f"/trained_models/diffusion_model_test_{model_id}.pth"), flush=True)
 
-    train_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1000,1008)), device=device, multi_gpu=multi_gpu)
-    validation_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=4, redshift=10, IC_seeds=list(range(1008,1011)), device=device, multi_gpu=multi_gpu)
-
+    #train_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1000,1008)), device=device, multi_gpu=multi_gpu)
+    #validation_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1008,1011)), device=device, multi_gpu=multi_gpu)
+    train_data_module = CustomDataset(path=path, redshifts=[10,], IC_seeds=list(range(1000,1008)), upscale=4, cut_factor=2, transform=False, device=device)
+    validation_data_module = CustomDataset(path=path, redshifts=[10,], IC_seeds=list(range(1008,1011)), upscale=4, cut_factor=2, transform=False, device=device)
+    train_data = torch.utils.data.DataLoader( train_data_module.getFullDataset(), batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(train_data_module.getFullDataset()) if multi_gpu else None) #4
+    validation_data = torch.utils.data.DataLoader( validation_data_module.getFullDataset(), batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(validation_data_module.getFullDataset()) if multi_gpu else None) #4
+    
     for e in range(total_epochs):
         avg_batch_loss = train_step(netG=netG, epoch=e, train_data=train_data, device=device, multi_gpu=multi_gpu)
 
         if avg_batch_loss == torch.min(torch.tensor(netG.loss)).item():
             
-            if len(netG.loss)>=400: #only start checking voxel loss after n epochs #change this when it works
-                losses_validation, input_output = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq", device=device, multi_gpu=multi_gpu)
-                input_output = [x.cpu() for x in input_output] if multi_gpu else input_output
+            if len(netG.loss)>=0: #only start checking voxel loss after n epochs #change this when it works
+                losses_validation, x_pred, k_and_dsq = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq", device=device, multi_gpu=multi_gpu)
+                #x_pred = x_pred.cpu() if multi_gpu else x_pred
                 if (str(device)=="cuda:0") or (str(device)=="cpu"):
-                    print("losses_validation: {0:.4f}, losses_validation_history minimum: {1:.4f}".format(losses_validation, torch.min(torch.tensor(netG.losses_validation_history)).item()))
-                
+                    print("losses_validation: {0}, losses_validation_history minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.losses_validation_history)).item()))
+                    
                     if losses_validation == torch.min(torch.tensor(netG.losses_validation_history)).item():
                             
                         #print("Saving model", flush=True)
                         #[x.cpu() for x in input_output]
-                        plot_checkpoint(*input_output, epoch = e, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
+                        plot_checkpoint(validation_data, x_pred, k_and_dsq=k_and_dsq, epoch = e, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
                         netG.save_network( path + f"/trained_models/diffusion_model_test_{model_id}.pth"  )
                     else:
                         print("Not saving model. Validaiton did not improve", flush=True)
@@ -1159,10 +1358,10 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 1000, 16, 24), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        mp.spawn(main, args=(world_size, 1000, 16, 27), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
-        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=24)#2*4)
+        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=27)#2*4)
     
         
 
