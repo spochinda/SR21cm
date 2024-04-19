@@ -1074,9 +1074,11 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     return avg_batch_loss.item()
 
 
-def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = None, device="cpu"):
+def plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=None, epoch=None, path = None, device="cpu"):
     x_true, delta, vbv, x_true_lr = validation_data.dataset.tensors 
-    k_vals_true, dsq_true, k_vals_pred, dsq_pred = k_and_dsq
+    k_vals_true, dsq_true, k_vals_pred, dsq_pred, model_idx = k_and_dsq_and_idx
+    print("Model idx: ", model_idx, flush=True)
+    
     #send to cpu
     x_true = x_true.cpu()
     delta = delta.cpu()
@@ -1090,7 +1092,7 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = 
     k_vals_pred = k_vals_pred.cpu()
     dsq_pred = dsq_pred.cpu()
 
-    i = torch.randint(0, x_true.shape[0], (1,)).item() #0
+    #model_idx = torch.randint(0, x_true.shape[0], (1,)).item() #0
 
     fig = plt.figure(figsize=(15,15))
     gs = GS(3, 3, figure=fig,) #height_ratios=[1,1,1.5])
@@ -1099,11 +1101,11 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = 
     ax_vbv = fig.add_subplot(gs[0,1])
     ax_x_true_lr = fig.add_subplot(gs[0,2])
 
-    ax_delta.imshow(delta[i,0,:,:,delta.shape[-1]//2], vmin=-1, vmax=1)
+    ax_delta.imshow(delta[model_idx,0,:,:,delta.shape[-1]//2], vmin=-1, vmax=1)
     ax_delta.set_title("Delta (input)")
-    ax_vbv.imshow(vbv[i,0,:,:,vbv.shape[-1]//2], vmin=-1, vmax=1)
+    ax_vbv.imshow(vbv[model_idx,0,:,:,vbv.shape[-1]//2], vmin=-1, vmax=1)
     ax_vbv.set_title("Vbv (input)")
-    ax_x_true_lr.imshow(x_true_lr[i,0,:,:,x_true_lr.shape[-1]//2], vmin=-1, vmax=1)
+    ax_x_true_lr.imshow(x_true_lr[model_idx,0,:,:,x_true_lr.shape[-1]//2], vmin=-1, vmax=1)
     ax_x_true_lr.set_title("T21 LR (input)")
 
 
@@ -1114,10 +1116,10 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = 
 
 
 
-    ax_x_true.imshow(x_true[i,0,:,:,x_true.shape[-1]//2], vmin=-1, vmax=1)
+    ax_x_true.imshow(x_true[model_idx,0,:,:,x_true.shape[-1]//2], vmin=-1, vmax=1)
     ax_x_true.set_title("T21 HR (Real)")
     
-    ax_x_pred.imshow(x_pred[i,0,:,:,x_pred.shape[-1]//2], vmin=-1, vmax=1)
+    ax_x_pred.imshow(x_pred[model_idx,0,:,:,x_pred.shape[-1]//2], vmin=-1, vmax=1)
     ax_x_pred.set_title(f"T21 SR (Generated) epoch {epoch}")
 
 
@@ -1140,11 +1142,11 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = 
 
     
     #ax_dsq.plot(k_vals_true, dsq_pred[:,0].T, alpha=0.02, color='k', ls='solid')
-    ax_dsq.plot(k_vals_true, dsq_true[i,0], label="T21 HR", ls='solid', lw=2)
-    ax_dsq.plot(k_vals_pred, dsq_pred[i,0], label="T21 SR", ls='solid', lw=2)
+    ax_dsq.plot(k_vals_true, dsq_true[model_idx,0], label="T21 HR", ls='solid', lw=2)
+    ax_dsq.plot(k_vals_pred, dsq_pred[model_idx,0], label="T21 SR", ls='solid', lw=2)
 
     ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[:,0] - dsq_true[:,0]).T, color='k', alpha=0.02)
-    ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[i,0] - dsq_true[i,0]), lw=2, )
+    ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[model_idx,0] - dsq_true[model_idx,0]), lw=2, )
 
     
     ax_dsq.set_ylabel('$\Delta^2(k)_\\mathrm{{norm}}$')
@@ -1156,8 +1158,8 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq=None, epoch=None, path = 
 
 
     ax_hist = fig.add_subplot(sgs[1])
-    ax_hist.hist(x_pred[i,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
-    ax_hist.hist(x_true[i,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
+    ax_hist.hist(x_pred[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
+    ax_hist.hist(x_true[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
     
     ax_hist.set_xlabel("Norm. $T_{{21}}$")
     ax_hist.set_ylabel("PDF")
@@ -1187,11 +1189,12 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
         x_pred = []
         dsq_true = []
         dsq_pred = []
+        voxel_mse = []
         k_vals_true_i = None
         k_vals_pred_i = None
 
-        for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
-        #for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
+        #for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
+        for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
             x_pred_i, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation, vbv_validation, T21_lr_validation], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=False, ddim_n_steps = 20, verbose=False, device=device)
             x_pred.append(x_pred_i[:,-1:])
             if validation_loss_type == "dsq":
@@ -1199,6 +1202,10 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
                 k_vals_pred_i, dsq_pred_i  = calculate_power_spectrum(x_pred_i[:,-1:], Lpix=3, kbins=100, dsq = True, method="torch", device=device)
                 dsq_true.append(dsq_true_i)
                 dsq_pred.append(dsq_pred_i)
+                
+                voxel_mse_i = torch.nanmean(torch.square(x_pred_i[:,-1:] - T21_validation), dim=(2,3,4))
+                voxel_mse.append(voxel_mse_i)
+
                 losses_validation_dsq += torch.nanmean(torch.square(dsq_pred_i - dsq_true_i)) / len(validation_data)
                 losses_validation_voxel += torch.nanmean(torch.square(x_pred_i[:,-1:] - T21_validation)) / len(validation_data)
             elif validation_loss_type == "voxel":
@@ -1209,6 +1216,7 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
         x_pred = torch.cat(x_pred, dim=0)
         dsq_true = torch.cat(dsq_true, dim=0) if validation_loss_type == "dsq" else None
         dsq_pred = torch.cat(dsq_pred, dim=0) if validation_loss_type == "dsq" else None
+        voxel_mse = torch.cat(voxel_mse, dim=0) if validation_loss_type == "dsq" else None
         #print("{0} loss: {1:.4f}".format(device, losses_validation.item()))
 
         if multi_gpu:
@@ -1216,14 +1224,17 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
             x_pred_tensor_list = [torch.zeros_like(x_pred) for _ in range(torch.distributed.get_world_size())]
             dsq_true_tensor_list = [torch.zeros_like(dsq_true, device=device) for _ in range(torch.distributed.get_world_size())]
             dsq_pred_tensor_list = [torch.zeros_like(dsq_pred, device=device) for _ in range(torch.distributed.get_world_size())]
+            voxel_mse_tensor_list = [torch.zeros_like(voxel_mse, device=device) for _ in range(torch.distributed.get_world_size())]
 
             torch.distributed.all_gather(tensor_list=x_pred_tensor_list, tensor=x_pred)
             torch.distributed.all_gather(tensor_list=dsq_true_tensor_list, tensor=dsq_true)
             torch.distributed.all_gather(tensor_list=dsq_pred_tensor_list, tensor=dsq_pred)
+            torch.distributed.all_gather(tensor_list=voxel_mse_tensor_list, tensor=voxel_mse)
             
             x_pred = torch.cat(x_pred_tensor_list, dim=0)
             dsq_true = torch.cat(dsq_true_tensor_list, dim=0) if validation_loss_type == "dsq" else None
             dsq_pred = torch.cat(dsq_pred_tensor_list, dim=0) if validation_loss_type == "dsq" else None
+            voxel_mse = torch.cat(voxel_mse_tensor_list, dim=0) if validation_loss_type == "dsq" else None
 
             torch.distributed.all_reduce(tensor=losses_validation_dsq, op=torch.distributed.ReduceOp.AVG)
             torch.distributed.all_reduce(tensor=losses_validation_voxel, op=torch.distributed.ReduceOp.AVG)
@@ -1231,14 +1242,15 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
             print("Validation loss: {0:.4f}".format(losses_validation_dsq.item()), flush=True)
             print("Validation voxel loss: {0:.4f}".format(losses_validation_voxel.item()*1e-1), flush=True)
             
-            
+        #get id of model with closest error to dsq_mse
+        dsq_mse = torch.nanmean(torch.square(dsq_pred - dsq_true), dim=2)
+        dsq_voxel_mse = dsq_mse + voxel_mse * 1e-1
+        dsq_voxel_mse_mean = torch.nanmean(dsq_voxel_mse)
+        model_idx = torch.argmin(torch.abs(dsq_voxel_mse - dsq_voxel_mse_mean)).item()
 
         total_loss = losses_validation_dsq + losses_validation_voxel * 1e-1
-        #losses_validation /= len(validation_data)
-        netG.losses_validation_history.append(total_loss.item())
-        #print("{0} loss {1:.4f} and time {2:.2f}".format(validation_type, losses_validation, time.time()-stime_ckpt))
-        #save_bool = losses_validation == np.min(netG.losses_validation_history)
-    return total_loss, x_pred, [k_vals_true_i, dsq_true, k_vals_pred_i, dsq_pred]
+        netG.losses_validation_history.append(total_loss)
+    return total_loss, x_pred, [k_vals_true_i, dsq_true, k_vals_pred_i, dsq_pred, model_idx]
         #elif (validation_type == "DDPM SR3") or (validation_type=="DDPM Classic"):
         #    print(validation_type + " validation")
         #    T21_validation_, delta_validation, vbv_validation, T21_lr_validation = loader_validation.dataset.tensors
@@ -1327,17 +1339,17 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
 
         if avg_batch_loss == torch.min(torch.tensor(netG.loss)).item():
             
-            if len(netG.loss)>=0: #only start checking voxel loss after n epochs #change this when it works
-                losses_validation, x_pred, k_and_dsq = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq", device=device, multi_gpu=multi_gpu)
+            if len(netG.loss)>=300: #only start checking voxel loss after n epochs #change this when it works
+                losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq", device=device, multi_gpu=multi_gpu)
                 #x_pred = x_pred.cpu() if multi_gpu else x_pred
                 if (str(device)=="cuda:0") or (str(device)=="cpu"):
                     print("losses_validation: {0}, losses_validation_history minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.losses_validation_history)).item()))
                     
-                    if losses_validation == torch.min(torch.tensor(netG.losses_validation_history)).item():
+                    if losses_validation.item() == torch.min(torch.tensor(netG.losses_validation_history)).item():
                             
                         #print("Saving model", flush=True)
                         #[x.cpu() for x in input_output]
-                        plot_checkpoint(validation_data, x_pred, k_and_dsq=k_and_dsq, epoch = e, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
+                        plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=k_and_dsq_and_idx, epoch = e, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
                         netG.save_network( path + f"/trained_models/diffusion_model_test_{model_id}.pth"  )
                     else:
                         print("Not saving model. Validaiton did not improve", flush=True)
@@ -1358,10 +1370,10 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 1000, 16, 27), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        mp.spawn(main, args=(world_size, 3000, 16, 29), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
-        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=27)#2*4)
+        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=29)#2*4)
     
         
 
