@@ -1193,8 +1193,8 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
         k_vals_true_i = None
         k_vals_pred_i = None
 
-        #for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
-        for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
+        for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
+        #for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
             x_pred_i, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation, vbv_validation, T21_lr_validation], n_save=2, clip_denoised=True, mean_approach = "DDIM", save_slices=True, ema=False, ddim_n_steps = 20, verbose=False, device=device)
             x_pred.append(x_pred_i[:,-1:])
             if validation_loss_type == "dsq":
