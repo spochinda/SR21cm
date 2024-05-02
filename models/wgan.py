@@ -1,5 +1,5 @@
 import tensorflow as tf
-from models.utils import *
+from models.utils_GAN import *
 #from utils import *
 
 class Critic(tf.keras.Model):
