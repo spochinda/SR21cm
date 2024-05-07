@@ -15,17 +15,20 @@ from torch.utils.data.distributed import DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
 
 from kymatio.scattering3d.backend.torch_backend import TorchBackend3D
-from kymatio.scattering3d.backend.torch_skcuda_backend import TorchSkcudaBackend3D
+#from kymatio.scattering3d.backend.torch_skcuda_backend import TorchSkcudaBackend3D
 from kymatio.torch import HarmonicScattering3D
 
 
 def ddp_setup(rank: int, world_size: int):
     try:
         os.environ["MASTER_ADDR"] #check if master address exists
+        print("Found master address: ", os.environ["MASTER_ADDR"])
     except:
+        print("Did not find master address variable. Setting manually...")
         os.environ["MASTER_ADDR"] = "localhost"
+
     
-    os.environ["MASTER_PORT"] = "12355"
+    os.environ["MASTER_PORT"] = "2595"#"12355" 
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
 
@@ -65,7 +68,7 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
     if multi_gpu:
         train_data.sampler.set_epoch(epoch) #fix for ddp loaded checkpoint?
     if (str(device)=="cuda:0") or (str(device)=="cpu"):
-        print(f"[{device}] Epoch {len(netG.loss)} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}")
+        print(f"[{device}] Epoch {len(netG.loss)} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}", flush=True)
     for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
         #if (str(device)=="cpu") or (str(device)=="cuda:0"):
 
@@ -113,9 +116,12 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=None, epoch=None,
     x_true, delta, vbv, x_true_lr = validation_data.dataset.tensors 
     k_vals_true, dsq_true, k_vals_pred, dsq_pred, model_idx = k_and_dsq_and_idx
 
-    if k_vals_true==dsq_true==k_vals_pred==dsq_pred==None:
-        k_vals_true, dsq_true  = calculate_power_spectrum(x_true, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
-        k_vals_pred, dsq_pred  = calculate_power_spectrum(x_pred, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+    try:
+        if k_vals_true==dsq_true==k_vals_pred==dsq_pred==None:
+            k_vals_true, dsq_true  = calculate_power_spectrum(x_true, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+            k_vals_pred, dsq_pred  = calculate_power_spectrum(x_pred, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+    except:
+        pass
     print("Model idx: ", model_idx, flush=True)
     
     #send to cpu
@@ -403,8 +409,8 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
         if multi_gpu:
             torch.distributed.barrier()
 
-            if True:#len(netG.loss)>=300: #only start checking voxel loss after n epochs #change this when it works
-                losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="WST", device=device, multi_gpu=multi_gpu)
+            if len(netG.loss)>=300: #only start checking voxel loss after n epochs #change this when it works
+                losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq_voxel", device=device, multi_gpu=multi_gpu)
                 #x_pred = x_pred.cpu() if multi_gpu else x_pred
                 if (str(device)=="cuda:0") or (str(device)=="cpu"):
                     print("losses_validation: {0}, losses_validation_history minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.losses_validation_history)).item()))

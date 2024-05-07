@@ -11,8 +11,8 @@ from torch.nn import init
 
 from torch_ema import ExponentialMovingAverage
 
-from .utils import *
-from .sde_lib import *
+from utils import *
+from sde_lib import *
 
 
 

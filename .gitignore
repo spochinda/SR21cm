@@ -2,6 +2,7 @@ IC/
 notebooks/*
 outputs/
 analysis/
+models/__pycache__
 plots/*
 trained_models/*
 !plots/critic_model.png
