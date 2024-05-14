@@ -11,8 +11,9 @@ from torch.nn import init
 
 from torch_ema import ExponentialMovingAverage
 
-from utils import *
-from sde_lib import *
+from .utils import *
+from .sde_lib import *
+from .samplers import Sampler
 
 
 
@@ -50,6 +51,7 @@ class GaussianDiffusion(nn.Module):
         self.loss = []
         self.losses_validation_history = []
         self.beta_schedule_opt = beta_schedule_opt
+        self.sample = Sampler()
         #self.noise_schedule = noise_schedule
         #self.noise_schedule_opt = noise_schedule_opt
         #if noise_schedule is not None:
@@ -258,7 +260,7 @@ class GaussianDiffusion(nn.Module):
                     )
         else:
             if str(self.device) == "cuda:0":
-                print("Saving model", flush=True)
+                print("Saving model!", flush=True)
                 torch.save(
                     obj = dict(
                         network_opt = self.network_opt,

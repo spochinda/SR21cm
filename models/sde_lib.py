@@ -26,7 +26,7 @@ class VPSDE():
     return 1
 
   def sde(self, x, t):
-    beta_t = self.beta_min + t * (self.beta_max - self.beta_min)
+    beta_t = (self.beta_min + t * (self.beta_max - self.beta_min)).to(x.device)
     drift = -0.5 * beta_t[:, None, None, None, None] * x
     diffusion = torch.sqrt(beta_t)
     return drift, diffusion

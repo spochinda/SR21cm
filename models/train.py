@@ -67,8 +67,7 @@ def train_step(netG, epoch, train_data, device="cpu", multi_gpu = False,
 
     if multi_gpu:
         train_data.sampler.set_epoch(epoch) #fix for ddp loaded checkpoint?
-    if (str(device)=="cuda:0") or (str(device)=="cpu"):
-        print(f"[{device}] Epoch {len(netG.loss)} | (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}", flush=True)
+
     for i,(T21_,delta_,vbv_, T21_lr_) in enumerate(train_data):
         #if (str(device)=="cpu") or (str(device)=="cuda:0"):
 
@@ -209,7 +208,7 @@ def plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=None, epoch=None,
 
 
 
-def validation_step(netG, validation_data, validation_type="DDIM", validation_loss_type="dsq_voxel", device="cpu", multi_gpu=False):
+def validation_step(netG, validation_data, validation_loss_type="dsq_voxel", device="cpu", multi_gpu=False):
     netG.model.eval()
     
     #validation_type = "DDIM" # or "DDPM SR3" or "DDPM Classic" or "None" (to save at every minimum training loss)
@@ -221,96 +220,100 @@ def validation_step(netG, validation_data, validation_type="DDIM", validation_lo
     losses_validation_WST = torch.tensor(0.0, device=device)
     #stime_ckpt = time.time()
 
-    if validation_type == "DDIM":
+    x_pred = []
+    dsq_true = []
+    dsq_pred = []
+    
+    dsq_mse = torch.tensor(0.0, device=device) #[]
+    voxel_mse = torch.tensor(0.0, device=device) #[]
+    wst_mse = torch.tensor(0.0, device=device) #[]
+    
+    k_vals_true_i = None
+    k_vals_pred_i = None
 
-        x_pred = []
-        dsq_true = []
-        dsq_pred = []
+    for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
+    #for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
+        #x_pred_i, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation, vbv_validation, T21_lr_validation], n_save=2, clip_denoised=True, sampler = "DDIM", save_slices=True, ema=False, ddim_n_steps = 20, verbose=False, device=device)
+        if netG.beta_schedule_opt["schedule_type"] == "VPSDE":
+            x_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, conditionals=[delta_validation, vbv_validation, T21_lr_validation], num_steps=100, eps=1e-3, clip_denoised=True, verbose=False)
+        elif netG.beta_schedule_opt["schedule_type"] in ["linear", "cosine"]:
+            x_pred_i = netG.sample.ddim(netG=netG, conditionals=[delta_validation, vbv_validation, T21_lr_validation], num_steps=100, clip_denoised=True, verbose=False)
+        else:
+            assert False, "Sampler not recognized"
+        x_pred.append(x_pred_i[:,-1:])
+
+        if validation_loss_type == "dsq_voxel":
+            k_vals_true_i, dsq_true_i  = calculate_power_spectrum(T21_validation, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+            k_vals_pred_i, dsq_pred_i  = calculate_power_spectrum(x_pred_i[:,-1:], Lpix=3, kbins=100, dsq = True, method="torch", device=device)
+            dsq_true.append(dsq_true_i)
+            dsq_pred.append(dsq_pred_i)
+            
+            voxel_mse += torch.nanmean(torch.square(x_pred_i[:,-1:] - T21_validation)) / len(validation_data)
+            dsq_mse += torch.nanmean(torch.square(dsq_pred_i - dsq_true_i)) / len(validation_data)
         
-        dsq_mse = torch.tensor(0.0, device=device) #[]
-        voxel_mse = torch.tensor(0.0, device=device) #[]
-        wst_mse = torch.tensor(0.0, device=device) #[]
+        elif validation_loss_type == "WST":
+            gpu_backend = False
+            Backend = TorchSkcudaBackend3D if gpu_backend else TorchBackend3D
+            #print("devices: ", T21_lr_validation.contiguous().device, x_pred_i[:,-1].device, T21_validation.device, flush=True)
+
+            scattering = HarmonicScattering3D(J=5, shape=T21_validation[0,0].shape, L=4, max_order=2, integral_powers=(1.0,), backend='torch_skcuda' if gpu_backend else 'torch') #(0.5, 1.0, 2.0))
+            
+            input = x_pred_i[:,-1].contiguous() if gpu_backend else x_pred_i[:,-1].contiguous().cpu()
+            order_0_pred = Backend.compute_integrals(input, integral_powers=(1.0,),)#backend='torch_skcuda') # TorchSkcudaBackend3D
+            order_1_2_pred = scattering(input)
+            
+            input = T21_validation[:,0].contiguous() if gpu_backend else T21_validation[:,0].contiguous().cpu()
+            order_0_true = Backend.compute_integrals(input, integral_powers=(1.0,),)#backend='torch_skcuda')# TorchSkcudaBackend3D
+            order_1_2_true = scattering(input)
+            
+            log_order_pred = torch.cat([order_0_pred, order_1_2_pred.mean(dim=(-2,-1))], dim=1).log10()
+            log_order_true = torch.cat([order_0_true, order_1_2_true.mean(dim=(-2,-1))], dim=1).log10()
+
+            
+            wst_mse += torch.nanmean(torch.square(log_order_pred - log_order_true)) / len(validation_data)
+
+            print("WST loss: {0:.4f}, device: {1}, i-loop: {2}".format(wst_mse.item(), str(device), i), flush=True)
         
-        k_vals_true_i = None
-        k_vals_pred_i = None
+        else:
+            assert False, "Validation loss type not recognized"
 
-        for i,(T21_validation, delta_validation, vbv_validation, T21_lr_validation) in enumerate(validation_data):
-        #for i, (T21_validation, delta_validation, vbv_validation, T21_lr_validation) in tqdm(enumerate(validation_data), total=len(validation_data)):
-            x_pred_i, x_slices, noises, pred_noises, x0_preds = netG.p_sample_loop(conditionals=[delta_validation, vbv_validation, T21_lr_validation], n_save=2, clip_denoised=True, sampler = "DDIM", save_slices=True, ema=False, ddim_n_steps = 20, verbose=False, device=device)
-            x_pred.append(x_pred_i[:,-1:])
+    x_pred = torch.cat(x_pred, dim=0)
+    dsq_true = torch.cat(dsq_true, dim=0) if validation_loss_type == "dsq_voxel" else None
+    dsq_pred = torch.cat(dsq_pred, dim=0) if validation_loss_type == "dsq_voxel" else None
+    
+    model_idx = 0
+    if multi_gpu:
+        x_pred_tensor_list = [torch.zeros_like(x_pred) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensor_list=x_pred_tensor_list, tensor=x_pred)
+        x_pred = torch.cat(x_pred_tensor_list, dim=0)
 
-            if validation_loss_type == "dsq_voxel":
-                k_vals_true_i, dsq_true_i  = calculate_power_spectrum(T21_validation, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
-                k_vals_pred_i, dsq_pred_i  = calculate_power_spectrum(x_pred_i[:,-1:], Lpix=3, kbins=100, dsq = True, method="torch", device=device)
-                dsq_true.append(dsq_true_i)
-                dsq_pred.append(dsq_pred_i)
-                
-                voxel_mse += torch.nanmean(torch.square(x_pred_i[:,-1:] - T21_validation)) / len(validation_data)
-                dsq_mse += torch.nanmean(torch.square(dsq_pred_i - dsq_true_i)) / len(validation_data)
-            
-            elif validation_loss_type == "WST":
-                gpu_backend = False
-                Backend = TorchSkcudaBackend3D if gpu_backend else TorchBackend3D
-                #print("devices: ", T21_lr_validation.contiguous().device, x_pred_i[:,-1].device, T21_validation.device, flush=True)
-
-                scattering = HarmonicScattering3D(J=5, shape=T21_validation[0,0].shape, L=4, max_order=2, integral_powers=(1.0,), backend='torch_skcuda' if gpu_backend else 'torch') #(0.5, 1.0, 2.0))
-                
-                input = x_pred_i[:,-1].contiguous() if gpu_backend else x_pred_i[:,-1].contiguous().cpu()
-                order_0_pred = Backend.compute_integrals(input, integral_powers=(1.0,),)#backend='torch_skcuda') # TorchSkcudaBackend3D
-                order_1_2_pred = scattering(input)
-                
-                input = T21_validation[:,0].contiguous() if gpu_backend else T21_validation[:,0].contiguous().cpu()
-                order_0_true = Backend.compute_integrals(input, integral_powers=(1.0,),)#backend='torch_skcuda')# TorchSkcudaBackend3D
-                order_1_2_true = scattering(input)
-                
-                log_order_pred = torch.cat([order_0_pred, order_1_2_pred.mean(dim=(-2,-1))], dim=1).log10()
-                log_order_true = torch.cat([order_0_true, order_1_2_true.mean(dim=(-2,-1))], dim=1).log10()
-
-                
-                wst_mse += torch.nanmean(torch.square(log_order_pred - log_order_true)) / len(validation_data)
-
-                print("WST loss: {0:.4f}, device: {1}, i-loop: {2}".format(wst_mse.item(), str(device), i), flush=True)
-            
-            else:
-                assert False, "Validation loss type not recognized"
-
-        x_pred = torch.cat(x_pred, dim=0)
-        dsq_true = torch.cat(dsq_true, dim=0) if validation_loss_type == "dsq_voxel" else None
-        dsq_pred = torch.cat(dsq_pred, dim=0) if validation_loss_type == "dsq_voxel" else None
+        if validation_loss_type == "dsq_voxel":
+            dsq_true_tensor_list = [torch.zeros_like(dsq_true, device=device) for _ in range(torch.distributed.get_world_size())]
+            dsq_pred_tensor_list = [torch.zeros_like(dsq_pred, device=device) for _ in range(torch.distributed.get_world_size())]
+            torch.distributed.all_gather(tensor_list=dsq_true_tensor_list, tensor=dsq_true)
+            torch.distributed.all_gather(tensor_list=dsq_pred_tensor_list, tensor=dsq_pred)
+            dsq_true = torch.cat(dsq_true_tensor_list, dim=0)
+            dsq_pred = torch.cat(dsq_pred_tensor_list, dim=0)
+            torch.distributed.all_reduce(tensor=dsq_mse, op=torch.distributed.ReduceOp.AVG)
+            torch.distributed.all_reduce(tensor=voxel_mse, op=torch.distributed.ReduceOp.AVG)
+            total_loss = dsq_mse + voxel_mse * 1e-1
+            #get id of model with closest error to dsq_mse
+            dsq_mse_i = torch.nanmean(torch.square(dsq_pred - dsq_true), dim=2)
+            dsq_voxel_mse = dsq_mse_i + voxel_mse * 1e-1
+            dsq_voxel_mse_mean = torch.nanmean(dsq_voxel_mse)
+            model_idx = torch.argmin(torch.abs(dsq_voxel_mse - dsq_voxel_mse_mean)).item()
+            if str(device)=="cuda:0":
+                print("Validation voxel_mse loss: {0:.4f}".format(voxel_mse.item()*1e-1), flush=True)
+                print("Validation dsq_mse loss: {0:.4f}".format(dsq_mse.item()), flush=True)
         
-        model_idx = 0
-        if multi_gpu:
-            x_pred_tensor_list = [torch.zeros_like(x_pred) for _ in range(torch.distributed.get_world_size())]
-            torch.distributed.all_gather(tensor_list=x_pred_tensor_list, tensor=x_pred)
-            x_pred = torch.cat(x_pred_tensor_list, dim=0)
+        elif validation_loss_type == "WST":
+            torch.distributed.all_reduce(tensor=wst_mse, op=torch.distributed.ReduceOp.AVG)
+            total_loss = wst_mse
+            if True:#str(device)=="cuda:0":
+                print("[{1}] Validation wst_mse loss: {0:.4f}".format(wst_mse.item(), str(device)), flush=True)
+        
 
-            if validation_loss_type == "dsq_voxel":
-                dsq_true_tensor_list = [torch.zeros_like(dsq_true, device=device) for _ in range(torch.distributed.get_world_size())]
-                dsq_pred_tensor_list = [torch.zeros_like(dsq_pred, device=device) for _ in range(torch.distributed.get_world_size())]
-                torch.distributed.all_gather(tensor_list=dsq_true_tensor_list, tensor=dsq_true)
-                torch.distributed.all_gather(tensor_list=dsq_pred_tensor_list, tensor=dsq_pred)
-                dsq_true = torch.cat(dsq_true_tensor_list, dim=0)
-                dsq_pred = torch.cat(dsq_pred_tensor_list, dim=0)
-                torch.distributed.all_reduce(tensor=dsq_mse, op=torch.distributed.ReduceOp.AVG)
-                torch.distributed.all_reduce(tensor=voxel_mse, op=torch.distributed.ReduceOp.AVG)
-                total_loss = dsq_mse + voxel_mse * 1e-1
-                #get id of model with closest error to dsq_mse
-                dsq_mse_i = torch.nanmean(torch.square(dsq_pred - dsq_true), dim=2)
-                dsq_voxel_mse = dsq_mse_i + voxel_mse * 1e-1
-                dsq_voxel_mse_mean = torch.nanmean(dsq_voxel_mse)
-                model_idx = torch.argmin(torch.abs(dsq_voxel_mse - dsq_voxel_mse_mean)).item()
-                if str(device)=="cuda:0":
-                    print("Validation voxel_mse loss: {0:.4f}".format(voxel_mse.item()*1e-1), flush=True)
-                    print("Validation dsq_mse loss: {0:.4f}".format(dsq_mse.item()), flush=True)
-            
-            elif validation_loss_type == "WST":
-                torch.distributed.all_reduce(tensor=wst_mse, op=torch.distributed.ReduceOp.AVG)
-                total_loss = wst_mse
-                if True:#str(device)=="cuda:0":
-                    print("[{1}] Validation wst_mse loss: {0:.4f}".format(wst_mse.item(), str(device)), flush=True)
-            
-
-        netG.losses_validation_history.append(total_loss)
+    netG.losses_validation_history.append(total_loss)
     return total_loss, x_pred, [k_vals_true_i, dsq_true, k_vals_pred_i, dsq_pred, model_idx]
         #elif (validation_type == "DDPM SR3") or (validation_type=="DDPM Classic"):
         #    print(validation_type + " validation")
@@ -386,10 +389,12 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
 #    SDE = VPSDE(beta_min=0.1, beta_max=20, N=1000)
 
     try:
-        netG.load_network(path + f"/trained_models/diffusion_model_test_{model_id}.pth")
-        print("Loaded network at {0}".format(path + f"/trained_models/diffusion_model_test_{model_id}.pth"), flush=True)
+        #netG.load_network(path + f"/trained_models/diffusion_model_test_{model_id}.pth")
+        fn = path + "/trained_models/diffusion_model_{0}_{1}".format(netG.beta_schedule_opt["schedule_type"], model_id)
+        netG.load_network(fn+".pth")
+        print("Loaded network at {0}".format(fn), flush=True)
     except:
-        print("Failed to load network at {0}. Starting from scratch.".format(path + f"/trained_models/diffusion_model_test_{model_id}.pth"), flush=True)
+        print("Failed to load network at {0}. Starting from scratch.".format(fn+".pth"), flush=True)
 
     #train_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1000,1008)), device=device, multi_gpu=multi_gpu)
     #validation_data = prepare_dataloader(path=path, batch_size=batch_size, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1008,1011)), device=device, multi_gpu=multi_gpu)
@@ -398,32 +403,27 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 2*4, model_id=21):
     train_data = torch.utils.data.DataLoader( train_data_module.getFullDataset(), batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(train_data_module.getFullDataset()) if multi_gpu else None) #4
     validation_data = torch.utils.data.DataLoader( validation_data_module.getFullDataset(), batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(validation_data_module.getFullDataset()) if multi_gpu else None) #4
     
+    if (str(device)=="cuda:0") or (str(device)=="cpu"):
+        print(f"[{device}] (Mini)Batchsize: {train_data.batch_size} | Steps (batches): {len(train_data)}", flush=True)
+
     for e in range(total_epochs):
         avg_loss = train_step(netG=netG, epoch=e, train_data=train_data, device=device, multi_gpu=multi_gpu)
-        #if (str(device)=="cuda:0") or (str(device)=="cpu"):
-        print("device {2}: losses min: {0:.5f}, losses history minimum: {1:.5f}".format(avg_loss,  torch.min(torch.tensor(netG.loss)).item(),  str(device)))
-        if (avg_loss == torch.min(torch.tensor(netG.loss)).item()) and (len(netG.loss)>=300):    
-            pass
-            #netG.save_network( path + "/trained_models/diffusion_model_{0}_{1}.pth".format(netG.beta_schedule_opt["schedule_type"], model_id)  )
-        #barrier:
-        if multi_gpu:
-            torch.distributed.barrier()
+        if (str(device)=="cuda:0") or (str(device)=="cpu"):
+            print("[{0}]: Epoch {1} done | loss min: {2:.4f}, loss history min: {3:.4f}".format(str(device), len(netG.loss), avg_loss,  torch.min(torch.tensor(netG.loss)).item() ),flush=True)
 
-            if len(netG.loss)>=300: #only start checking voxel loss after n epochs #change this when it works
-                losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_type="DDIM", validation_loss_type="dsq_voxel", device=device, multi_gpu=multi_gpu)
-                #x_pred = x_pred.cpu() if multi_gpu else x_pred
-                if (str(device)=="cuda:0") or (str(device)=="cpu"):
-                    print("losses_validation: {0}, losses_validation_history minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.losses_validation_history)).item()))
-                    
-                    if losses_validation.item() == torch.min(torch.tensor(netG.losses_validation_history)).item():
-                            
-                        #print("Saving model", flush=True)
-                        #[x.cpu() for x in input_output]
-                        plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=k_and_dsq_and_idx, epoch = e, path = path + f"/trained_models/diffusion_saved_model_{model_id}.png", device="cpu")
-                        #netG.save_network( path + f"/trained_models/diffusion_model_test_{model_id}.pth"  )
-                    else:
-                        print("Not saving model. Validaiton did not improve", flush=True)
-
+        if (avg_loss == torch.min(torch.tensor(netG.loss)).item()) and (len(netG.loss)>=2000):
+            netG.save_network( fn+".pth" )
+            #losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_loss_type="dsq_voxel", device=device, multi_gpu=multi_gpu)
+            
+            if False: #(str(device)=="cuda:0") or (str(device)=="cpu"):
+                print("losses_validation: {0}, losses_validation_history minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.losses_validation_history)).item()), flush=True)
+                
+                if losses_validation.item() == torch.min(torch.tensor(netG.losses_validation_history)).item():       
+                    plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=k_and_dsq_and_idx, epoch = e, path = fn+".png", device="cpu")
+                    netG.save_network( fn+".pth" )
+                else:
+                    print("Not saving model. Validaiton did not improve", flush=True)
+        torch.distributed.barrier()
     
     if multi_gpu:#world_size > 1:
         destroy_process_group()
@@ -440,9 +440,9 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 3000, 16, 34), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        mp.spawn(main, args=(world_size, 100000, 16, 36), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
-        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=34)#2*4)
+        main(rank=0, world_size=0, total_epochs=1, batch_size=8, model_id=36)#2*4)
     
         
