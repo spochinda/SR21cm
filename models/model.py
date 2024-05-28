@@ -285,7 +285,14 @@ class UNet(nn.Module):
             Swish(),
             ConvolutionalLayer(n_channels_in=pre_channel, n_channels_out=out_channel, kernel_size=3, stride=1, padding=1, dim=dim),#nn.Conv2d(n_channels_in, n_channels_out, kernel_size=(3, 3), padding=(1, 1))
         )
-    def forward(self, x, time):
+    def forward(self, x, time, x_lr=None, conditionals=None):
+        if conditionals is not None:
+            x = torch.cat((x, *conditionals), dim=1)
+        if x_lr is not None:
+            upscale = x.shape[-1] // x_lr.shape[-1]
+            x_lr = nn.Upsample(scale_factor=upscale, mode='trilinear')(x_lr)
+            x = torch.cat((x, x_lr), dim=1)
+        
         t = self.temb(time)
 
         feats = []

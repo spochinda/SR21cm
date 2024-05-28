@@ -11,9 +11,10 @@ class VPSDE():
       N: number of discretization steps
     """
     super().__init__()
+    self.timesteps = timesteps
     self.beta_min = beta_min
     self.beta_max = beta_max
-    self.timesteps = timesteps
+    
     self.discrete_betas = torch.linspace(beta_min / timesteps, beta_max / timesteps, timesteps)
     self.alphas = 1. - self.discrete_betas
     self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
@@ -26,11 +27,20 @@ class VPSDE():
     return 1
 
   def sde(self, x, t):
-    beta_t = (self.beta_min + t * (self.beta_max - self.beta_min)).to(x.device)
-    drift = -0.5 * beta_t[:, None, None, None, None] * x
+    b,(*d)  = x.shape
+    beta_t = (self.beta_min + t * (self.beta_max - self.beta_min)).view(b,*[1]*len(d)).to(x.device)
+    #print("beta shape", beta_t.shape)
+    drift = -0.5 * beta_t * x
     diffusion = torch.sqrt(beta_t)
     return drift, diffusion
-
+  
+  def rsde(self, x, t, score):
+    """Create the drift and diffusion functions for the reverse SDE/ODE."""
+    drift, diffusion = self.sde(x, t)
+    #score = self.score_fn(t, model_output)
+    drift = drift - diffusion ** 2 * score
+    return drift, diffusion
+  
   def marginal_prob(self, x, t):
     log_mean_coeff = -0.25 * t ** 2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
     mean = torch.exp(log_mean_coeff) * x

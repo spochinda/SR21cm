@@ -11,9 +11,9 @@ from torch.nn import init
 
 from torch_ema import ExponentialMovingAverage
 
-from .utils import *
-from .sde_lib import *
-from .samplers import Sampler
+from utils import *
+from sde_lib import *
+from samplers import Sampler
 
 
 
@@ -25,6 +25,7 @@ class GaussianDiffusion(nn.Module):
         network_opt,
         beta_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}},
         learning_rate=1e-4,
+        scheduler=False,
         rank = 0,
     ):
         super().__init__()
@@ -45,11 +46,14 @@ class GaussianDiffusion(nn.Module):
         if self.multi_gpu:
             self.model = DDP(self.model, device_ids=[rank])
 
+        self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate,) #weight_decay=1e-5)
+        self.scheduler = scheduler
+        if self.scheduler:
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optG, gamma=0.99954, last_epoch=-1)
         
-        self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate)
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.995)
         self.loss = []
-        self.losses_validation_history = []
+        self.loss_validation = {"loss": [1e20,], "loss_validation": [1e20,]}
         self.beta_schedule_opt = beta_schedule_opt
         self.sample = Sampler()
         #self.noise_schedule = noise_schedule
@@ -87,6 +91,7 @@ class GaussianDiffusion(nn.Module):
     def q_sample(self, x0, t, noise=None): #forward diffusion
         #"t and batch number dim should be the same"
         b,(*d) = x0.shape
+
         t=torch.tensor(t).view(b,*[1]*len(d))
         noise = torch.randn_like(x0, device=self.device) if noise==None else noise
         
@@ -102,6 +107,7 @@ class GaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, sampler = "DDPM SR3", ema=False):
+        assert False, "Deprecated use samplers.py instead"
         b,(*d) = x_t.shape
         time = t
         t=torch.tensor(b*[t]).view(b,*[1]*len(d))
@@ -160,6 +166,7 @@ class GaussianDiffusion(nn.Module):
 
     @torch.no_grad()
     def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, sampler = True, save_slices=False, ema=False, ddim_n_steps = None, verbose = True, device="cpu"):
+        assert False, "Deprecated use samplers.py instead"
         assert sampler in ["DDPM Classic", "DDPM SR3", "DDIM"], "sampler must be one of ['DDPM Classic', 'DDPM SR3', 'DDIM']"
         
         #print("last alpha: ", self.alphas[1000])
@@ -250,10 +257,11 @@ class GaussianDiffusion(nn.Module):
                 obj = dict(
                     network_opt = self.network_opt,
                     model = self.model.state_dict(), 
-                    optimizer = self.optG.state_dict(),# epoch = e ),
-                    #ema = self.ema.state_dict(),
+                    optimizer = self.optG.state_dict(),
+                    scheduler = self.scheduler.state_dict() if self.scheduler is not False else False,
+                    ema = self.ema.state_dict(),
                     loss = self.loss,
-                    losses_validation_history = self.losses_validation_history,
+                    loss_validation = self.loss_validation,
                     #noise_schedule_opt = self.noise_schedule_opt),
                     beta_schedule_opt = self.beta_schedule_opt),
                     f = path
@@ -265,10 +273,11 @@ class GaussianDiffusion(nn.Module):
                     obj = dict(
                         network_opt = self.network_opt,
                         model = self.model.module.state_dict(), 
-                        optimizer = self.optG.state_dict(),# epoch = e ),
-                        #ema = self.ema.state_dict(),
+                        optimizer = self.optG.state_dict(), 
+                        scheduler = self.scheduler.state_dict() if self.scheduler is not False else False,
+                        ema = self.ema.state_dict(),
                         loss = self.loss,
-                        losses_validation_history = self.losses_validation_history,
+                        loss_validation = self.loss_validation,
                         #noise_schedule_opt = self.noise_schedule_opt),
                         beta_schedule_opt = self.beta_schedule_opt),
                         f = path
@@ -283,8 +292,18 @@ class GaussianDiffusion(nn.Module):
             self.model.to(self.device)
             self.model = DDP(self.model, device_ids=[self.rank])
         self.optG.load_state_dict(loaded_state['optimizer'])
+        try:
+            self.scheduler = loaded_state['scheduler']
+        except Exception as e:
+            print(e, flush=True)
+            print("Failed to load scheduler.", flush=True)
+        try:
+            self.ema.load_state_dict(loaded_state['ema'])
+        except Exception as e:
+            print(e, flush=True)
+            print("Failed to load EMA.", flush=True)
         self.loss = loaded_state['loss']
-        self.losses_validation_history = loaded_state['losses_validation_history']
+        self.loss_validation = loaded_state['loss_validation']
         self.beta_schedule_opt = loaded_state['beta_schedule_opt']
         self.set_new_noise_schedule()
 

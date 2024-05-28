@@ -10,7 +10,8 @@ class Sampler():
 
     def Euler_Maruyama_sampler(self,
                                netG,
-                               conditionals,  
+                               x_lr = None,
+                               conditionals=None,  
                                num_steps=1000, 
                                #device='cuda', 
                                eps=1e-3,
@@ -20,7 +21,7 @@ class Sampler():
         assert netG.beta_schedule_opt["schedule_type"] == "VPSDE", "Sampler only supports VPSDE schedule type."
         
         netG.model.eval()
-        b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
+        b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (order is delta,vbv)
 
         #batch_size = conditionals[0].shape[0]
         #t = torch.ones(b, )
@@ -28,7 +29,7 @@ class Sampler():
         #shape = conditionals[0].shape[2:]
         noise = torch.randn(b, *d, device=conditionals[-1].device)
         mean, std = netG.SDE.marginal_prob(noise, t)
-        #print(mean.shape, std.shape, noise.shape)
+
         init_x = noise * std
         time_steps = torch.linspace(1., eps, num_steps)
         step_size = time_steps[0] - time_steps[1]
@@ -37,11 +38,19 @@ class Sampler():
         with torch.no_grad():
             for time_step in tqdm(time_steps, desc='sampling loop time step', disable = not verbose):      
                 batch_time_step = torch.tensor(b*[time_step]).view(b,*[1]*len(d)) #torch.ones(batch_size) * time_step
-                drift, g = netG.SDE.sde(x=x,t=batch_time_step)
-                #print(drift.shape, g.shape, x.shape)
-                X = torch.cat([x, *conditionals], dim=1)
-                mean_x = x + (g**2) * netG.model(X, batch_time_step) * step_size
-                x = mean_x + torch.sqrt(step_size) * g * torch.randn_like(x) #+ 0.5 * g**2 * x
+                drift, diffusion = netG.SDE.sde(x=x,t=batch_time_step) #drift=f diffusion=g
+                #X = torch.cat([x, *conditionals], dim=1)
+                
+                #epsilon_theta_t = netG.model(x=x_t, time=alpha_t, x_lr=x_lr, conditionals=conditionals) #fix here
+                #print("x: ", x.shape, "time: ", batch_time_step.shape, "x_lr: ", x_lr.shape, "conditionals[0]: ", conditionals[0].shape, "conditionals[1]: ", conditionals[1].shape, flush=True) 
+                score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals)
+                #score = netG.model(X, batch_time_step)
+                
+                mean_x = x - (drift - diffusion**2 * score) * step_size #double check signs
+                x = mean_x + diffusion * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
+                #mean_x = x + (g**2) * score * step_size
+                #x = mean_x + torch.sqrt(step_size) * g * torch.randn_like(x) #+ 0.5 * g**2 * x
+
                 x_sequence.append(x)
             x_sequence.append(mean_x)
             x_sequence = torch.cat(x_sequence, dim=1)
@@ -120,8 +129,10 @@ class Sampler():
     @torch.no_grad()
     def ddim_v2(self, 
                 netG,
-                conditionals, 
-                num_steps=100, 
+                x_lr=None,
+                conditionals=None, 
+                num_steps=100,
+                invert_norm=False, 
                 clip_denoised=True, 
                 verbose=False):
         netG.model.eval()
@@ -152,7 +163,8 @@ class Sampler():
             #print("alpha_t: ", alpha_t, alpha_t_prev, flush=True)
 
             # predict noise using model
-            epsilon_theta_t = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t)
+            #epsilon_theta_t = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=alpha_t)
+            epsilon_theta_t = netG.model(x=x_t, time=alpha_t, x_lr=x_lr, conditionals=conditionals) #fix here
 
             # calculate x_{t-1}
             eta = 0.0
@@ -171,13 +183,24 @@ class Sampler():
         if clip_denoised:
             x[:,-1] = x[:,-1].clamp_(-1,1)
         
+        if torch.is_tensor(invert_norm):
+            x_min = invert_norm[:,:1]
+            x_max = invert_norm[:,1:2]
+
+            x[:,-1:] = ((x[:,-1:] + 1) * (x_max - x_min) / 2 ) + x_min
+            
+            lr_norm_correction_factor = 1.21 if False else 1.
+            x[:,-1:] = x[:,-1:] * lr_norm_correction_factor
+        
+        
         return x
 
         
     
     def ddpm_classic(self,
                      netG,
-                     conditionals, 
+                     x_lr=None,
+                     conditionals=None, 
                      n_save = 10, 
                      clip_denoised=True, 
                      verbose=False):
@@ -200,7 +223,8 @@ class Sampler():
                 noise_level = alpha_t_cumprod
                 posterior_variance_t = netG.posterior_variance[t] #torch.sqrt(beta_t)
                 noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
-                pred_noise = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
+                #pred_noise = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
+                pred_noise = netG.model(x=x_t, time=noise_level, x_lr=x_lr, conditionals=conditionals) #fix here
                 posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise) #approach used in most papers   
                 
                 for i,(x,t_) in enumerate(zip(x_t,t)):
@@ -224,7 +248,8 @@ class Sampler():
     
     def ddpm_sr3(self, 
                  netG,
-                 conditionals, 
+                 x_lr=None,
+                 conditionals=None, 
                  n_save = 10, 
                  clip_denoised=True, 
                  verbose=False):
@@ -247,7 +272,8 @@ class Sampler():
                 noise_level = alpha_t_cumprod
                 posterior_variance_t = netG.posterior_variance[t] #torch.sqrt(beta_t)
                 noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
-                pred_noise = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
+                #pred_noise = netG.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
+                pred_noise = netG.model(x=x_t, time=alpha_t, x_lr=x_lr, conditionals=conditionals) #fix here
                 
                 x0 = netG.predict_start_from_noise(x_t=x_t, t=t, noise=pred_noise) #eq in text above eq 9 rewritten for x0
                 x0 = torch.clamp(x0, -1.0, 1.0) if clip_denoised else x0
