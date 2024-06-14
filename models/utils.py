@@ -3,13 +3,16 @@ import torch
 import numpy as np
 from scipy.io import loadmat
 import pandas as pd
+import torch.utils
+import torch.utils.data
 
 class CustomDataset(torch.utils.data.Dataset):
-    def __init__(self, path=os.getcwd().split("21cmGen")[0]+"21cmGen", 
+    def __init__(self, path_T21, path_IC, 
                  redshifts=[10,], IC_seeds=list(range(1000,1008)), 
                  upscale=4, cut_factor=0, transform=False, norm_lr=False, device='cpu'):
         self.device = device
-        self.path = path
+        self.path_T21 = path_T21
+        self.path_IC = path_IC
         self.redshifts = redshifts
         self.IC_seeds = IC_seeds
         self.upscale = upscale
@@ -24,93 +27,94 @@ class CustomDataset(torch.utils.data.Dataset):
     def __len__(self):
         return len(self.df)
 
-    # def __getitem__(self, idx):
-    #     #get full cubes
-    #     #stime = time.time()
-    #     T21 = torch.from_numpy(loadmat(self.path+ "/outputs/" + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-    #     delta = torch.from_numpy(loadmat(self.path + "/IC/" + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-    #     vbv = torch.from_numpy(loadmat(self.path+ "/IC/" + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-    #     T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/self.upscale, mode='trilinear') #torch.nn.functional.interpolate( # Define low resolution input that has been downsampled and upsampled again
-    #     #    torch.nn.functional.interpolate(T21, scale_factor=1/self.upscale, mode='trilinear'),
-    #     #    scale_factor=self.upscale, mode='trilinear')
-    #     #print("load time: {0:.2f}".format(time.time()-stime))
-    #
-    #     #get subcube according to subcube index
-    #     #stime = time.time()
-    #     if self.cut_factor > 0:
-    #         i = self.df["IC,z,subcube"].iloc[idx][-1]
-    #         T21 = get_subcubes(T21, self.cut_factor)[i:i+1]
-    #         delta = get_subcubes(delta, self.cut_factor)[i:i+1]
-    #         vbv = get_subcubes(vbv, self.cut_factor)[i:i+1]
-    #         T21_lr = get_subcubes(T21_lr, self.cut_factor)[i:i+1]
-    #     #print("subcube time: {0:.2f}".format(time.time()-stime))
-    #
-    #     #stime = time.time()
-    #
-    #     T21, min_max_T21 = normalize(T21)
-    #     delta, min_max_delta = normalize(delta)
-    #     vbv, min_max_vbv = normalize(vbv)
-    #     T21_lr, min_max_T21_lr = normalize(T21_lr)
-    #
-    #     #print("normalize time: {0:.2f}".format(time.time()-stime))
-    #
-    #     #stime = time.time()
-    #     if self.transform: #rotate
-    #         print("Transforms disabled. Rotation augmentation in training loop", flush=True)
-    #         #T21,delta,vbv,T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1)
-    #     #print("augment time: {0:.2f}".format(time.time()-stime))
-    #
-    #     #select [0] so iterator can batch
-    #     T21 = T21[0]
-    #     delta = delta[0]
-    #     vbv = vbv[0]
-    #     T21_lr = T21_lr[0]
-    #
-    #     return T21,delta,vbv,T21_lr,min_max_T21_lr
+    @torch.no_grad()
+    def __getitem__(self, idx):
+        #get full cubes
+        #T21 = torch.from_numpy(loadmat(self.path+ "/outputs/" + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+        #delta = torch.from_numpy(loadmat(self.path + "/IC/" + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+        #vbv = torch.from_numpy(loadmat(self.path+ "/IC/" + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+        #T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/self.upscale, mode='trilinear')
+        T21 = torch.from_numpy(loadmat(self.path_T21 + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).to(torch.float32).to(self.device)
+        delta = torch.from_numpy(loadmat(self.path_IC + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).to(torch.float32).to(self.device)
+        vbv = torch.from_numpy(loadmat(self.path_IC + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).to(torch.float32).to(self.device)
+        T21_lr = torch.nn.functional.interpolate(T21.unsqueeze(0), scale_factor=1/self.upscale, mode='trilinear')[0]
+        labels = torch.tensor(self.df[["labels (z)"]].iloc[idx].values[0]).to(torch.float32).to(self.device)
+
+        if False:
+            if self.cut_factor > 0:
+                i = self.df["IC,z,subcube"].iloc[idx][-1]
+                T21 = get_subcubes(T21, self.cut_factor)[i:i+1]
+                delta = get_subcubes(delta, self.cut_factor)[i:i+1]
+                vbv = get_subcubes(vbv, self.cut_factor)[i:i+1]
+                T21_lr = get_subcubes(T21_lr, self.cut_factor)[i:i+1]
+            
+            T21, min_max_T21 = normalize(T21)
+            delta, min_max_delta = normalize(delta)
+            vbv, min_max_vbv = normalize(vbv)
+            T21_lr, min_max_T21_lr = normalize(T21_lr)
+
+            if self.transform: #rotate
+                print("Transforms disabled. Rotation augmentation in training loop", flush=True)
+                #T21,delta,vbv,T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1)
+
+            #select [0] so iterator can batch
+            T21 = T21[0]
+            delta = delta[0]
+            vbv = vbv[0]
+            T21_lr = T21_lr[0]
+    
+        return T21, delta, vbv, T21_lr, labels
     
     def getDataFrame(self, cut_factor=0):
         rows = []
-        for i in range((2**cut_factor)**3):
-            for IC_seed in self.IC_seeds:
-                for redshift in self.redshifts:
-                    row = [[IC_seed, redshift, i]] #[f"IC={IC_seed}, z={redshift}"]
-                    for file in os.listdir(self.path+"/outputs"):
+        for IC_seed in self.IC_seeds:
+            for redshift in self.redshifts:
+                for i in range((2**cut_factor)**3):
+                    row = [[IC_seed, i], [redshift,]] #[f"IC={IC_seed}, z={redshift}"]
+                    for file in os.listdir(self.path_T21):
                         if 'T21_cube' in file:
                             z = int(file.split('_')[2])
-                            IC = int(file.split('_')[7])
+                            try:
+                                IC = int(file.split('_')[7])
+                            except:
+                                IC = int(file.split('IC')[-1].split('.mat')[0])
                             if (z == redshift) and (IC == IC_seed):
                                 row.append(file)
-                    for file in os.listdir(self.path+'/IC'):
+                    for file in os.listdir(self.path_IC):
                         if 'delta' in file:
                             IC = int(file.split('delta')[1].split('.')[0])
                             if IC == IC_seed:
                                 row.append(file)
-                    for file in os.listdir(self.path+'/IC'):
+                    for file in os.listdir(self.path_IC):
                         if 'vbv' in file:
                             IC = int(file.split('vbv')[1].split('.')[0])
                             if IC == IC_seed:
                                 row.append(file)
                     rows.append(row)
-        df = pd.DataFrame(rows, columns=['IC,z,subcube', 'T21', 'delta', 'vbv'])
+        df = pd.DataFrame(rows, columns=['IC,subcube', 'labels (z)', 'T21', 'delta', 'vbv'])
         
         return df
 
     def getFullDataset(self):
+        labels = []
+        for index, row in self.df.iterrows():
+            labels.append(row['labels (z)'])
+
         self.df = self.getDataFrame(cut_factor=0)
 
         T21 = []
         delta = []
         vbv = []
         T21_lr = []
-
+        
         for index, row in self.df.iterrows():
             T21_file = row['T21']
             delta_file = row['delta']
             vbv_file = row['vbv']
 
-            T21_cube = torch.from_numpy(loadmat(self.path+ "/outputs/" + T21_file)["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-            delta_cube = torch.from_numpy(loadmat(self.path + "/IC/" + delta_file)["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-            vbv_cube = torch.from_numpy(loadmat(self.path+ "/IC/" + vbv_file)["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+            T21_cube = torch.from_numpy(loadmat(self.path_T21 + T21_file)["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+            delta_cube = torch.from_numpy(loadmat(self.path_IC + delta_file)["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
+            vbv_cube = torch.from_numpy(loadmat(self.path_IC + vbv_file)["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
             T21_lr_cube = torch.nn.functional.interpolate(T21_cube, scale_factor=1/self.upscale, mode='trilinear') #torch.nn.functional.interpolate( 
             #    ,
             #    scale_factor=self.upscale, mode='trilinear')
@@ -119,11 +123,13 @@ class CustomDataset(torch.utils.data.Dataset):
             delta.append(delta_cube)
             vbv.append(vbv_cube)
             T21_lr.append(T21_lr_cube)
+            
 
         T21 = torch.cat(T21, dim=0)
         delta = torch.cat(delta, dim=0)
         vbv = torch.cat(vbv, dim=0)
         T21_lr = torch.cat(T21_lr, dim=0)
+        labels = torch.tensor(labels, device=self.device)
 
         T21 = get_subcubes(T21, self.cut_factor)
         delta = get_subcubes(delta, self.cut_factor)
@@ -134,11 +140,9 @@ class CustomDataset(torch.utils.data.Dataset):
         T21_norm, T21_extrema = normalize(T21, x_min=T21_lr_extrema[:,:1] if self.norm_lr else None, x_max=T21_lr_extrema[:,1:2] if self.norm_lr else None)
         delta_norm, delta_extrema = normalize(delta)
         vbv_norm, vbv_extrema = normalize(vbv)
-        
 
-
-        dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-        dataset_norm = torch.utils.data.TensorDataset(T21_norm, delta_norm, vbv_norm, T21_lr_norm)
+        dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, labels)
+        dataset_norm = torch.utils.data.TensorDataset(T21_norm, delta_norm, vbv_norm, T21_lr_norm, labels)
         dataset_extrema = torch.utils.data.TensorDataset(T21_extrema, delta_extrema, vbv_extrema, T21_lr_extrema)
         return dataset, dataset_norm, dataset_extrema
 
@@ -170,8 +174,9 @@ def beta_schedule(schedule_type = "cosine", schedule_opt = {}):
                                         schedule_opt['beta_max'] / schedule_opt['timesteps'], 
                                         schedule_opt['timesteps'])
         return discrete_betas
+
     else:
-        raise ValueError("schedule_type must be one of ['cosine', 'linear', 'VPSDE']")
+        raise ValueError("schedule_type must be one of ['cosine', 'linear', 'VPSDE', 'EDM']")
 
 
 
@@ -240,6 +245,7 @@ def random_rotations(x, n=1):
 #    T21_lr = dataset[:,3:]
 #    return T21, delta, vbv, T21_lr
 
+@torch.no_grad()
 def augment_dataset(T21, delta, vbv, T21_lr, n=8):
     dataset_x1 = []
     dataset_x2 = []
@@ -317,6 +323,7 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
     else:
         raise ValueError("Method must be numpy or torch")
 
+@torch.no_grad()
 def normalize(x, x_min=None, x_max=None):
     if x_min is None and x_max is None:
         x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
@@ -339,6 +346,7 @@ def invert_normalization(x, x_extrema):
     #x = x * lr_norm_correction_factor
     return x
 
+@torch.no_grad()
 def get_subcubes(cubes, cut_factor=0):
     if cut_factor > 0:
         batch, channel,(*d) = cubes.shape
@@ -354,3 +362,40 @@ def get_subcubes(cubes, cut_factor=0):
         return sub_cubes
     else:
         return cubes
+    
+if __name__ == "__main__":
+    import time 
+
+    path = os.getcwd().split("21cmGen")[0]+"21cmGen"
+
+    train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
+                                      redshifts=[10,], IC_seeds=list(range(0,4)), upscale=4, cut_factor=1, transform=False, norm_lr=True, device="cpu")
+    
+    print(train_data_module.df)
+    
+    if True:        
+        start_time0 = time.time()
+        train_dataset, train_dataset_norm, train_dataset_extrema = train_data_module.getFullDataset()
+        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=2, shuffle=True)
+        print(f"Time loading full dataset: {(time.time()-start_time0):.2f}, shape: {train_dataset.tensors[0].shape}", flush=True)
+        if False:
+            for i,(T21, delta, vbv, T21_lr, labels) in enumerate(train_dataloader):
+                multiple_redshifts = False
+                cut_factor = torch.randint(low=0, high=3, size=(1,))
+                cut_label = torch.ones_like(labels) * 1/(2**cut_factor)**3
+                labels = torch.cat([labels, cut_label], dim=1) if multiple_redshifts else cut_label
+        
+    
+    #print(get_subcubes(train_dataset.tensors[0], cut_factor=torch.tensor([1])).shape)
+    if False:
+        train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=2, shuffle=True)
+        for T21, delta, vbv, T21_lr, labels in train_dataloader:
+            print(labels)
+        print(f"Time: {(time.time()-start_time):.2f}", flush=True)
+
+    #import time
+    #start_time = time.time()
+
+    #data = loadmat(path + "/outputs/T21_cubes_256/T21_cube_6__IC6.mat")
+    
+    #print("Loading time: ", time.time()-start_time)

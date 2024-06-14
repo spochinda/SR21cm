@@ -4,60 +4,155 @@ import torch
 import numpy as np
 from tqdm import tqdm
 
+from scipy import integrate #for ode solver
+
 class Sampler():
     def __init__(self):
         super().__init__()
 
+    @torch.no_grad()
     def Euler_Maruyama_sampler(self,
                                netG,
                                x_lr = None,
-                               conditionals=None,  
+                               conditionals=None,
+                               class_labels=None,  
                                num_steps=1000, 
                                #device='cuda', 
                                eps=1e-3,
                                clip_denoised=True,
                                verbose=False):
 
-        assert netG.beta_schedule_opt["schedule_type"] == "VPSDE", "Sampler only supports VPSDE schedule type."
+        assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Sampler only supports VPSDE schedule type."
         
         netG.model.eval()
         b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (order is delta,vbv)
 
         #batch_size = conditionals[0].shape[0]
         #t = torch.ones(b, )
-        t = torch.tensor(b*[1.], device=conditionals[-1].device).view(b,*[1]*len(d))
+        t = torch.tensor(b*[1.], device=x_lr.device).view(b,*[1]*len(d))
         #shape = conditionals[0].shape[2:]
-        noise = torch.randn(b, *d, device=conditionals[-1].device)
+        noise = torch.randn(b, *d, device=x_lr.device)
         mean, std = netG.SDE.marginal_prob(noise, t)
 
-        init_x = noise * std
-        time_steps = torch.linspace(1., eps, num_steps)
+        time_steps = torch.linspace(1., eps, num_steps, device=x_lr.device)
         step_size = time_steps[0] - time_steps[1]
-        x = init_x
-        x_sequence = [x]
-        with torch.no_grad():
-            for time_step in tqdm(time_steps, desc='sampling loop time step', disable = not verbose):      
-                batch_time_step = torch.tensor(b*[time_step]).view(b,*[1]*len(d)) #torch.ones(batch_size) * time_step
-                drift, diffusion = netG.SDE.sde(x=x,t=batch_time_step) #drift=f diffusion=g
-                #X = torch.cat([x, *conditionals], dim=1)
-                
-                #epsilon_theta_t = netG.model(x=x_t, time=alpha_t, x_lr=x_lr, conditionals=conditionals) #fix here
-                #print("x: ", x.shape, "time: ", batch_time_step.shape, "x_lr: ", x_lr.shape, "conditionals[0]: ", conditionals[0].shape, "conditionals[1]: ", conditionals[1].shape, flush=True) 
-                score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals)
-                #score = netG.model(X, batch_time_step)
-                
-                mean_x = x - (drift - diffusion**2 * score) * step_size #double check signs
-                x = mean_x + diffusion * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
-                #mean_x = x + (g**2) * score * step_size
-                #x = mean_x + torch.sqrt(step_size) * g * torch.randn_like(x) #+ 0.5 * g**2 * x
 
-                x_sequence.append(x)
-            x_sequence.append(mean_x)
-            x_sequence = torch.cat(x_sequence, dim=1)
-        # Do not include any noise in the last sampling step.
+        x = noise * std
+        x_sequence = [x]
+        
+        
+        #x_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(x_lr) #only for SongUNet
+        
+        
+        
+        for time_step in tqdm(time_steps, desc='sampling loop time step', disable = not verbose):      
+
+            batch_time_step = torch.tensor(b*[time_step], device=x_lr.device).view(b,*[1]*len(d)) #torch.ones(batch_size) * time_step
+            #f, g = netG.SDE.sde(x=x,t=batch_time_step) #drift=f diffusion=g
+
+            if False:
+                score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals)
+            else:
+                
+                #mean, noise_labels = netG.SDE.marginal_prob(x=x, t=batch_time_step)
+                #noise_labels = batch_time_step.flatten() #noise_labels.flatten()
+                X = torch.cat([x, *conditionals, x_lr], dim = 1)
+
+                try:
+                    score = netG.model(x=X, noise_labels=batch_time_step.flatten(), class_labels=class_labels, augment_labels=None)
+                except Exception as e:
+                    print(e)
+                    score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals) #old UNet model (maybe time is sigma from marginalprob?)
+                    
+                
+                f, g = netG.SDE.rsde(x=x, t=batch_time_step, score=score)
+            
+            #x_mean = x - (f - g**2 * score) * step_size #double check signs
+            x_mean = x - f * step_size #- g**2 * score) * step_size #double check signs
+
+            #x = x_mean + g * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
+            x = x_mean + g * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
+
+            x_sequence.append(x)
+        #x_sequence.append(x_mean) # Do not include any noise in the last sampling step.
+        x_sequence = torch.cat(x_sequence, dim=1)
+        
         if clip_denoised:
             x_sequence[:,-1] = x_sequence[:,-1].clamp_(-1,1)
+        
         return x_sequence
+    
+    @torch.no_grad()
+    def ode_sampler(self, 
+                    netG,
+                    x_lr,
+                    conditionals,
+                    class_labels=None,
+                    atol=1e-5,
+                    rtol=1e-5,
+                    #device='cuda', 
+                    eps=1e-3):
+        """Generate samples from score-based models with black-box ODE solvers.
+
+        Args:
+            score_model: A PyTorch model that represents the time-dependent score-based model.
+            marginal_prob_std: A function that returns the standard deviation 
+            of the perturbation kernel.
+            diffusion_coeff: A function that returns the diffusion coefficient of the SDE.
+            batch_size: The number of samplers to generate by calling this function once.
+            atol: Tolerance of absolute errors.
+            rtol: Tolerance of relative errors.
+            device: 'cuda' for running on GPUs, and 'cpu' for running on CPUs.
+            z: The latent code that governs the final sample. If None, we start from p_1;
+            otherwise, we start from the given z.
+            eps: The smallest time step for numerical stability.
+        """
+        assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Sampler only supports VPSDE schedule type."
+        netG.model.eval()
+        x_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(x_lr)
+
+        b,(*d)  = x_lr.shape #select the last conditional to get the shape (order is delta,vbv)
+        batch_time_step = torch.ones(size=(b,*[1]*len(d)),dtype=torch.float32, device=x_lr.device)
+        #torch.tensor(b*[1.], device=conditionals[-1].device).view(b,*[1]*len(d))
+
+        noise = torch.randn(b, *d, device=conditionals[-1].device)
+        mean, std = netG.SDE.marginal_prob(noise, batch_time_step)
+
+        # Create the latent code
+        init_x = noise * std
+        shape = init_x.shape
+        
+        def ode_func(batch_time_step, x):        
+            """The ODE function for use by the ODE solver."""
+            x = torch.tensor(x.reshape(shape), dtype=torch.float32, device=x_lr.device)
+            
+            batch_time_step = torch.ones(size=(b,*[1]*len(d)),dtype=torch.float32, device=x_lr.device) * batch_time_step
+
+            if False:
+                score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals)
+            else:
+                #mean, noise_labels = netG.SDE.marginal_prob(x=x, t=batch_time_step)
+                x, noise_labels = netG.SDE.marginal_prob(x=x, t=batch_time_step)
+                noise_labels = batch_time_step.flatten() #noise_labels.flatten()
+                X = torch.cat([x, *conditionals, x_lr], dim = 1)
+                try:
+                    score = netG.model(x=X, noise_labels=noise_labels, class_labels=class_labels, augment_labels=None)
+                except:
+                    score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals) #old UNet model (maybe time is sigma from marginalprob?)
+
+            drift, g = netG.SDE.sde(x=x,t=batch_time_step)
+            g = g.cpu().numpy()
+            drift = drift.cpu().numpy()
+            score = score.cpu().numpy()
+            return  (drift - 0.5 * (g**2) * score).reshape((-1,)).astype(np.float32) #score
+        
+        # Run the black-box ODE solver.
+        res = integrate.solve_ivp(fun=ode_func, t_span=(1., eps), y0=init_x.reshape(-1).cpu().numpy(), rtol=rtol, atol=atol, method='RK45')  
+        print(f"Number of function evaluations: {res.nfev}")
+        
+        x = torch.tensor(res.y[:, -1].reshape(shape), dtype=torch.float32)
+        return x
+
     
     def ddim(self, 
              netG,
@@ -67,7 +162,7 @@ class Sampler():
              verbose=False):
         
         #only supports "linear" or "cosine" schedule
-        assert netG.beta_schedule_opt["schedule_type"] in ["linear", "cosine"], "Sampler only supports linear or cosine schedule type."
+        assert netG.noise_schedule_opt["schedule_type"] in ["linear", "cosine"], "Sampler only supports linear or cosine schedule type."
 
         self.ddim_timesteps = torch.linspace(0, 1+netG.timesteps-(netG.timesteps//(num_steps)), num_steps, dtype=torch.int) #improved denoising diffusion probabilistic models 
         self.ddim_alpha = netG.alphas_cumprod[self.ddim_timesteps]
@@ -205,7 +300,7 @@ class Sampler():
                      clip_denoised=True, 
                      verbose=False):
         #only supports "linear" or "cosine" schedule
-        assert netG.beta_schedule_opt["schedule_type"] in ["linear", "cosine"], "Sampler only supports linear or cosine schedule type."
+        assert netG.noise_schedule_opt["schedule_type"] in ["linear", "cosine"], "Sampler only supports linear or cosine schedule type."
 
         netG.model.eval()
         sample_inter = netG.timesteps//n_save if n_save <= netG.timesteps else 1
@@ -254,7 +349,7 @@ class Sampler():
                  clip_denoised=True, 
                  verbose=False):
         #only supports "linear" or "cosine" schedule
-        assert netG.beta_schedule_opt["schedule_type"] in ["linear", "cosine"], "Sampler only supports linear or cosine schedule type."
+        assert netG.noise_schedule_opt["schedule_type"] in ["linear", "cosine"], "Sampler only supports linear or cosine schedule type."
 
         netG.model.eval()
         sample_inter = netG.timesteps//n_save if n_save <= netG.timesteps else 1

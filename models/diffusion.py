@@ -23,7 +23,8 @@ class GaussianDiffusion(nn.Module):
         self,
         network,
         network_opt,
-        beta_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}},
+        noise_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}},
+        loss_fn = None,
         learning_rate=1e-4,
         scheduler=False,
         rank = 0,
@@ -42,7 +43,7 @@ class GaussianDiffusion(nn.Module):
         self.network = network
         self.network_opt = network_opt
         self.model = self.network(**self.network_opt).to(self.device)
-        init_weights(self.model, init_type='orthogonal')
+        #init_weights(self.model, init_type='orthogonal')
         if self.multi_gpu:
             self.model = DDP(self.model, device_ids=[rank])
 
@@ -51,10 +52,11 @@ class GaussianDiffusion(nn.Module):
         if self.scheduler:
             self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optG, gamma=0.99954, last_epoch=-1)
         
-        self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.995)
+        self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.9999)
         self.loss = []
         self.loss_validation = {"loss": [1e20,], "loss_validation": [1e20,]}
-        self.beta_schedule_opt = beta_schedule_opt
+        self.noise_schedule_opt = noise_schedule_opt
+        self.loss_fn = loss_fn
         self.sample = Sampler()
         #self.noise_schedule = noise_schedule
         #self.noise_schedule_opt = noise_schedule_opt
@@ -63,23 +65,30 @@ class GaussianDiffusion(nn.Module):
         self.set_new_noise_schedule()
 
     def set_new_noise_schedule(self):
-        self.betas = beta_schedule(**self.beta_schedule_opt).to(self.device)
+        if self.noise_schedule_opt["schedule_type"] == "DDPM":
+            self.betas = beta_schedule(**self.noise_schedule_opt).to(self.device)
 
-        self.timesteps = self.beta_schedule_opt["schedule_opt"]["timesteps"]
-        self.alphas = 1. - self.betas
-        self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-        self.alphas_cumprod_prev = torch.cat((torch.tensor([1.], dtype=torch.float32, device=self.device), self.alphas_cumprod[:-1]))
-        #self.alphas_cumprod_prev = torch.tensor(np.append(1., self.alphas_cumprod[:-1]), dtype=torch.float32) #need to specify dtype because np.append with 1. is float64
-        #self.betas = beta_schedule(**self.beta_schedule_opt).to(self.device) #self.noise_schedule(**self.noise_schedule_opt).to(self.device)
+            self.timesteps = self.noise_schedule_opt["schedule_opt"]["timesteps"]
+            self.alphas = 1. - self.betas
+            self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
+            self.alphas_cumprod_prev = torch.cat((torch.tensor([1.], dtype=torch.float32, device=self.device), self.alphas_cumprod[:-1]))
+            #self.alphas_cumprod_prev = torch.tensor(np.append(1., self.alphas_cumprod[:-1]), dtype=torch.float32) #need to specify dtype because np.append with 1. is float64
+            #self.betas = beta_schedule(**self.noise_schedule_opt).to(self.device) #self.noise_schedule(**self.noise_schedule_opt).to(self.device)
+            
+            # calculations for posterior q(x_{t-1} | x_t, x_0)
+            self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
         
-        # calculations for posterior q(x_{t-1} | x_t, x_0)
-        self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
-
-        if self.beta_schedule_opt["schedule_type"] == "VPSDE":
-            self.SDE = VPSDE(beta_min=self.beta_schedule_opt["schedule_opt"]["beta_min"], 
-                             beta_max=self.beta_schedule_opt["schedule_opt"]["beta_max"], 
-                             timesteps=self.beta_schedule_opt["schedule_opt"]["timesteps"]
+        elif self.noise_schedule_opt["schedule_type"] == "VPSDE":
+            self.betas = beta_schedule(**self.noise_schedule_opt).to(self.device) #discrete betas 
+            self.SDE = VPSDE(beta_min=self.noise_schedule_opt["schedule_opt"]["beta_min"], 
+                             beta_max=self.noise_schedule_opt["schedule_opt"]["beta_max"], 
+                             timesteps=self.noise_schedule_opt["schedule_opt"]["timesteps"]
                              )
+        
+        elif self.noise_schedule_opt["schedule_type"] == "EDM":
+            pass
+        else:
+            raise NotImplementedError
             
         
     def predict_start_from_noise(self, x_t, t, noise):
@@ -95,7 +104,7 @@ class GaussianDiffusion(nn.Module):
         t=torch.tensor(t).view(b,*[1]*len(d))
         noise = torch.randn_like(x0, device=self.device) if noise==None else noise
         
-        if self.beta_schedule_opt["schedule_type"] != "VPSDE":
+        if self.noise_schedule_opt["schedule_type"] != "VPSDE":
             alphas_cumprod_t = self.alphas_cumprod[t]
             x_t = torch.sqrt(alphas_cumprod_t) * x0 + torch.sqrt(1 - alphas_cumprod_t) * noise
             return x_t, noise
@@ -263,7 +272,7 @@ class GaussianDiffusion(nn.Module):
                     loss = self.loss,
                     loss_validation = self.loss_validation,
                     #noise_schedule_opt = self.noise_schedule_opt),
-                    beta_schedule_opt = self.beta_schedule_opt),
+                    noise_schedule_opt = self.noise_schedule_opt),
                     f = path
                     )
         else:
@@ -279,7 +288,7 @@ class GaussianDiffusion(nn.Module):
                         loss = self.loss,
                         loss_validation = self.loss_validation,
                         #noise_schedule_opt = self.noise_schedule_opt),
-                        beta_schedule_opt = self.beta_schedule_opt),
+                        noise_schedule_opt = self.noise_schedule_opt),
                         f = path
                         )
 
@@ -293,7 +302,7 @@ class GaussianDiffusion(nn.Module):
             self.model = DDP(self.model, device_ids=[self.rank])
         self.optG.load_state_dict(loaded_state['optimizer'])
         try:
-            self.scheduler = loaded_state['scheduler']
+            self.scheduler.load_state_dict(loaded_state['scheduler'])
         except Exception as e:
             print(e, flush=True)
             print("Failed to load scheduler.", flush=True)
@@ -303,12 +312,105 @@ class GaussianDiffusion(nn.Module):
             print(e, flush=True)
             print("Failed to load EMA.", flush=True)
         self.loss = loaded_state['loss']
-        self.loss_validation = loaded_state['loss_validation']
-        self.beta_schedule_opt = loaded_state['beta_schedule_opt']
+        try:
+            self.loss_validation = loaded_state['loss_validation']
+        except:
+            self.loss_validation = loaded_state['losses_validation_history']
+        try:
+            self.noise_schedule_opt = loaded_state['beta_schedule_opt']
+        except:
+            self.noise_schedule_opt = loaded_state['noise_schedule_opt'] #changed name to noise_schedule_opt
         self.set_new_noise_schedule()
 
+    def vprecond_forward(self, x, conditionals, sigma, class_labels=None):
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1, 1)
+        #class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float32
 
+        c_skip = 1
+        c_out = -sigma
+        c_in = 1 / (sigma ** 2 + 1).sqrt()
+        c_noise = (self.noise_schedule_opt["schedule_opt"]["timesteps"] - 1) * self.sigma_inv(sigma)
+        
+        F_x = self.model(x = torch.cat([(c_in * x).to(dtype), *conditionals], dim=1), noise_labels = c_noise.flatten(), class_labels=class_labels) #D_yn = net(x=torch.cat([y, *conditionals], dim = 1), noise_labels=sigma.flatten(), class_labels=None, augment_labels=None)
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
 
+        return D_x
+    
+    def edmrecond_forward(self, x, conditionals, sigma, class_labels=None):
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1, 1)
+        dtype = torch.float32
+
+        c_skip = self.loss_fn.sigma_data ** 2 / (sigma ** 2 + self.loss_fn.sigma_data ** 2)
+        c_out = sigma * self.loss_fn.sigma_data / (sigma ** 2 + self.loss_fn.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.loss_fn.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        #F_x = self.model((c_in * x).to(dtype), c_noise.flatten(), class_labels=class_labels)
+        F_x = self.model(x = torch.cat([(c_in * x).to(dtype), *conditionals], dim=1), noise_labels = c_noise.flatten(), class_labels=class_labels)
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x
+
+    def sigma(self, t):
+        t = torch.as_tensor(t)
+        beta_d = self.noise_schedule_opt["schedule_opt"]["beta_max"] - self.noise_schedule_opt["schedule_opt"]["beta_min"]
+        beta_min = self.noise_schedule_opt["schedule_opt"]["beta_min"]
+        return ((0.5 * beta_d * (t ** 2) + beta_min * t).exp() - 1).sqrt()
+
+    def sigma_inv(self, sigma):
+        sigma = torch.as_tensor(sigma)
+        beta_d = self.noise_schedule_opt["schedule_opt"]["beta_max"] - self.noise_schedule_opt["schedule_opt"]["beta_min"]
+        beta_min = self.noise_schedule_opt["schedule_opt"]["beta_min"]
+        #print("beta_min: ", beta_min, "beta_d: ", beta_d, "sigma: ", sigma, "sigma ** 2: ", sigma ** 2, "log: ", (1 + sigma ** 2).log(), "sqrt: ", (beta_min ** 2 + 2 * beta_d * (1 + sigma ** 2).log()).sqrt(), "sigma_inv: ", ((beta_min ** 2 + 2 * beta_d * (1 + sigma ** 2).log()).sqrt() - beta_min) / beta_d, flush=True)
+        return ((beta_min ** 2 + 2 * beta_d * (1 + sigma ** 2).log()).sqrt() - beta_min) / beta_d
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+
+class EDMPrecond(torch.nn.Module):
+    def __init__(self,
+        img_resolution,                     # Image resolution.
+        img_channels,                       # Number of color channels.
+        label_dim       = 0,                # Number of class labels, 0 = unconditional.
+        use_fp16        = False,            # Execute the underlying model at FP16 precision?
+        sigma_min       = 0,                # Minimum supported noise level.
+        sigma_max       = float('inf'),     # Maximum supported noise level.
+        sigma_data      = 0.5,              # Expected standard deviation of the training data.
+        model_type      = 'DhariwalUNet',   # Class name of the underlying model.
+        **model_kwargs,                     # Keyword arguments for the underlying model.
+    ):
+        super().__init__()
+        #self.img_resolution = img_resolution
+        #self.img_channels = img_channels
+        self.label_dim = label_dim
+        self.sigma_min = sigma_min
+        self.sigma_max = sigma_max
+        self.sigma_data = sigma_data
+        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
+
+    def forward(self, x, sigma, class_labels=None, **model_kwargs):
+        x = x.to(torch.float32)
+        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
+        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
+        dtype = torch.float32
+
+        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
+        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
+        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
+        c_noise = sigma.log() / 4
+
+        F_x = self.model((c_in * x).to(dtype), c_noise.flatten(), class_labels=class_labels, **model_kwargs)
+        assert F_x.dtype == dtype
+        D_x = c_skip * x + c_out * F_x.to(torch.float32)
+        return D_x
+
+    def round_sigma(self, sigma):
+        return torch.as_tensor(sigma)
+    
 def weights_init_orthogonal(m):
     classname = m.__class__.__name__
     #print(classname)
