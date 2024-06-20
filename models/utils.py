@@ -29,39 +29,25 @@ class CustomDataset(torch.utils.data.Dataset):
 
     @torch.no_grad()
     def __getitem__(self, idx):
-        #get full cubes
-        #T21 = torch.from_numpy(loadmat(self.path+ "/outputs/" + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-        #delta = torch.from_numpy(loadmat(self.path + "/IC/" + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-        #vbv = torch.from_numpy(loadmat(self.path+ "/IC/" + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).unsqueeze(0).to(torch.float32).to(self.device)
-        #T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/self.upscale, mode='trilinear')
-        T21 = torch.from_numpy(loadmat(self.path_T21 + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).to(torch.float32).to(self.device)
-        delta = torch.from_numpy(loadmat(self.path_IC + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).to(torch.float32).to(self.device)
-        vbv = torch.from_numpy(loadmat(self.path_IC + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).to(torch.float32).to(self.device)
-        T21_lr = torch.nn.functional.interpolate(T21.unsqueeze(0), scale_factor=1/self.upscale, mode='trilinear')[0]
-        labels = torch.tensor(self.df[["labels (z)"]].iloc[idx].values[0]).to(torch.float32).to(self.device)
-
-        if False:
-            if self.cut_factor > 0:
-                i = self.df["IC,z,subcube"].iloc[idx][-1]
-                T21 = get_subcubes(T21, self.cut_factor)[i:i+1]
-                delta = get_subcubes(delta, self.cut_factor)[i:i+1]
-                vbv = get_subcubes(vbv, self.cut_factor)[i:i+1]
-                T21_lr = get_subcubes(T21_lr, self.cut_factor)[i:i+1]
+        if True:
+            #for new data
+            T21 = torch.from_numpy(loadmat(self.path_T21 + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).to(torch.float32).to(self.device)
+            delta = torch.from_numpy(loadmat(self.path_IC + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).to(torch.float32).to(self.device)
+            vbv = torch.from_numpy(loadmat(self.path_IC + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).to(torch.float32).to(self.device)
+            T21_lr = torch.nn.functional.interpolate(T21.unsqueeze(0), scale_factor=1/self.upscale, mode='trilinear')[0]
+            labels = torch.tensor(self.df[["labels (z)"]].iloc[idx].values[0]).to(torch.float32).to(self.device)
+        else:
+            #for old data
+            #use getFullDataset first to set self.dataset
+            T21, delta, vbv, T21_lr, labels = self.dataset.tensors
             
-            T21, min_max_T21 = normalize(T21)
-            delta, min_max_delta = normalize(delta)
-            vbv, min_max_vbv = normalize(vbv)
-            T21_lr, min_max_T21_lr = normalize(T21_lr)
+            T21 = T21[idx]
+            delta = delta[idx]
+            vbv = vbv[idx]
+            T21_lr = T21_lr[idx]
+            labels = labels[idx]
 
-            if self.transform: #rotate
-                print("Transforms disabled. Rotation augmentation in training loop", flush=True)
-                #T21,delta,vbv,T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1)
 
-            #select [0] so iterator can batch
-            T21 = T21[0]
-            delta = delta[0]
-            vbv = vbv[0]
-            T21_lr = T21_lr[0]
     
         return T21, delta, vbv, T21_lr, labels
     
@@ -142,6 +128,7 @@ class CustomDataset(torch.utils.data.Dataset):
         vbv_norm, vbv_extrema = normalize(vbv)
 
         dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, labels)
+        self.dataset = dataset #save dataset for later use
         dataset_norm = torch.utils.data.TensorDataset(T21_norm, delta_norm, vbv_norm, T21_lr_norm, labels)
         dataset_extrema = torch.utils.data.TensorDataset(T21_extrema, delta_extrema, vbv_extrema, T21_lr_extrema)
         return dataset, dataset_norm, dataset_extrema
@@ -323,18 +310,6 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
     else:
         raise ValueError("Method must be numpy or torch")
 
-@torch.no_grad()
-def normalize(x, x_min=None, x_max=None):
-    if x_min is None and x_max is None:
-        x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
-        x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
-    
-    x_extrema = torch.cat([x_min, x_max], dim=1)
-    
-    x = (x - x_min) / (x_max - x_min)
-    x = 2 * x - 1
-
-    return x, x_extrema
 
 def invert_normalization(x, x_extrema):
     x_min = x_extrema[:,:1]
@@ -363,39 +338,40 @@ def get_subcubes(cubes, cut_factor=0):
     else:
         return cubes
     
-if __name__ == "__main__":
-    import time 
-
-    path = os.getcwd().split("21cmGen")[0]+"21cmGen"
-
-    train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
-                                      redshifts=[10,], IC_seeds=list(range(0,4)), upscale=4, cut_factor=1, transform=False, norm_lr=True, device="cpu")
-    
-    print(train_data_module.df)
-    
-    if True:        
-        start_time0 = time.time()
-        train_dataset, train_dataset_norm, train_dataset_extrema = train_data_module.getFullDataset()
-        train_dataloader = torch.utils.data.DataLoader(train_dataset, batch_size=2, shuffle=True)
-        print(f"Time loading full dataset: {(time.time()-start_time0):.2f}, shape: {train_dataset.tensors[0].shape}", flush=True)
-        if False:
-            for i,(T21, delta, vbv, T21_lr, labels) in enumerate(train_dataloader):
-                multiple_redshifts = False
-                cut_factor = torch.randint(low=0, high=3, size=(1,))
-                cut_label = torch.ones_like(labels) * 1/(2**cut_factor)**3
-                labels = torch.cat([labels, cut_label], dim=1) if multiple_redshifts else cut_label
+@torch.no_grad()
+def normalize(x, mode = "minmax", **kwargs):
+    if mode == "minmax":
+        if "x_min" not in kwargs: 
+            x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
+        else:
+            x_min = kwargs["x_min"]
+        if "x_max" not in kwargs:
+            x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
+        else:
+            x_max = kwargs["x_max"]
         
+        x_extrema = torch.cat([x_min, x_max], dim=1)
+        
+        x = (x - x_min) / (x_max - x_min)
+        x = 2 * x - 1
+        return x, x_extrema
     
-    #print(get_subcubes(train_dataset.tensors[0], cut_factor=torch.tensor([1])).shape)
-    if False:
-        train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=2, shuffle=True)
-        for T21, delta, vbv, T21_lr, labels in train_dataloader:
-            print(labels)
-        print(f"Time: {(time.time()-start_time):.2f}", flush=True)
+    elif mode == "standard":
+        if "x_mean" not in kwargs:
+            x_mean = torch.mean(x, dim=(1,2,3,4), keepdim=True)
+        else:
+            x_mean = kwargs["x_mean"]
+        if "x_std" not in kwargs:
+            x_std = torch.std(x, dim=(1,2,3,4), keepdim=True)
+        else:
+            x_std = kwargs["x_std"]
 
-    #import time
-    #start_time = time.time()
+        x_stats = torch.cat([x_mean, x_std], dim=1)
 
-    #data = loadmat(path + "/outputs/T21_cubes_256/T21_cube_6__IC6.mat")
+        x = (x - x_mean) / (2 * x_std) #should the 2 be there? LR std approx. 0.5*HR std
+
+        return x, x_stats
+
     
-    #print("Loading time: ", time.time()-start_time)
+if __name__ == "__main__":
+    pass

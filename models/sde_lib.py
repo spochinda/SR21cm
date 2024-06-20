@@ -34,11 +34,13 @@ class VPSDE():
     diffusion = torch.sqrt(beta_t)
     return drift, diffusion
   
-  def rsde(self, x, t, score):
+  def rsde(self, x, t, score, probability_flow=False):
     """Create the drift and diffusion functions for the reverse SDE/ODE."""
     drift, diffusion = self.sde(x, t)
     #score = self.score_fn(t, model_output)
-    drift = drift - diffusion ** 2 * score
+    drift = drift - diffusion ** 2 * score * (0.5 if probability_flow else 1.)
+    # Set the diffusion function to zero for ODEs.
+    diffusion = torch.zeros_like(diffusion) if probability_flow else diffusion
     return drift, diffusion
   
   def marginal_prob(self, x, t):

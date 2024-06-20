@@ -109,8 +109,12 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
     for i,(T21, delta, vbv, T21_lr, labels) in enumerate(train_dataloader):
 
         if volume_reduction:
-            cut_factor = torch.randint(low=1, high=3, size=(1,), device=device)#.item()
-            
+            if netG.network_opt["label_dim"] > 0:
+                cut_factor = torch.randint(low=1, high=3, size=(1,), device=device)#.item()
+            else:
+                cut_factor = torch.randint(low=2, high=3, size=(1,), device=device)#always cut 2
+                #cut_factor = torch.randint(low=1, high=2, size=(1,), device=device)#always cut 1
+
             T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
             delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
             vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
@@ -127,25 +131,29 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
         else:
             labels = None
         
-        with torch.no_grad():
-            T21_lr_min = torch.amin(T21_lr, dim=(1,2,3,4), keepdim=True)
-            T21_lr_max = torch.amax(T21_lr, dim=(1,2,3,4), keepdim=True)
-            T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
+        #with torch.no_grad():
+        #T21_lr_min = torch.amin(T21_lr, dim=(1,2,3,4), keepdim=True)
+        #T21_lr_max = torch.amax(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
         
-        T21_lr, T21_lr_extrema = normalize(T21_lr)
-        T21, T21_extrema = normalize(T21, x_min=T21_lr_min, x_max=T21_lr_max)
-        delta, delta_extrema = normalize(delta)
-        vbv, vbv_extrema = normalize(vbv)
+        T21_lr, T21_lr_stats = normalize(T21_lr, mode="standard")
+        T21, T21_stats = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std)
+        delta, delta_extrema = normalize(delta, mode="standard")
+        vbv, vbv_extrema = normalize(vbv, mode="standard")
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
-
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-            sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=(2**(cut_factor.item()-1))**3, shuffle=False, sampler = None) 
-            
+            sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None) # (2**(cut_factor.item()-1))**3 // 2 #4
+            if False:#str(device)=="cuda:0":
+                print("Splitting batch...", flush=True)            
             for j,(T21, delta, vbv, T21_lr) in enumerate(sub_dataloader):
+
                 #if str(device)=="cuda:0":
                 #    print(f"Shape of T21: {T21.shape}", flush=True)
-
+                
+                netG.optG.zero_grad()
                 loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
                                     labels=labels, augment_pipe=None,
                                     )
@@ -154,10 +162,11 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
                 loss.backward()
                 #with torch.autograd.profiler.record_function("## optimizer ##") if False else contextlib.nullcontext():            
                 torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
-                netG.optG.zero_grad()
                 netG.optG.step()        
-                #with torch.autograd.profiler.record_function("## ema ##") if False else contextlib.nullcontext():                
                 netG.ema.update() #Update netG.model with exponential moving average
+                
+                #with torch.autograd.profiler.record_function("## ema ##") if False else contextlib.nullcontext():                
+                
         else:
             loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
                                     labels=labels, augment_pipe=None,
@@ -176,6 +185,8 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
             if False: #i%(len(train_data)//16) == 0:
                 print(f"Batch {i} of {len(train_data)} batches")
+
+        break #only do one box for now
     
     if multi_gpu:
         torch.distributed.all_reduce(tensor=avg_loss, op=torch.distributed.ReduceOp.SUM) #total loss=sum(average total batch loss per gpu)
@@ -301,7 +312,8 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
     for i,(T21, delta, vbv, T21_lr, labels) in tqdm(enumerate(validation_dataloader), desc='validation loop', total=len(validation_dataloader), disable=False if str(device)=="cuda:0" else True):
         # Rest of the code
         # alternating cut_factor 1 and 2:
-        cut_factor = torch.tensor([i%2 + 1], device=device) #randomness comes from validation_dataloader shuffle so it is not the same cubes cut each time
+        #cut_factor = torch.tensor([i%2 + 1], device=device) #randomness comes from validation_dataloader shuffle so it is not the same cubes cut each time
+        cut_factor = torch.tensor([1], device=device) #randomness comes from validation_dataloader shuffle so it is not the same cubes cut each time
         
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
         delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
@@ -317,14 +329,16 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
         else:
             labels = None
         
-        T21_lr_min = torch.amin(T21_lr, dim=(1,2,3,4), keepdim=True)
-        T21_lr_max = torch.amax(T21_lr, dim=(1,2,3,4), keepdim=True)
+        #T21_lr_min = torch.amin(T21_lr, dim=(1,2,3,4), keepdim=True)
+        #T21_lr_max = torch.amax(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
         
-        T21_lr, T21_lr_extrema = normalize(T21_lr)
-        T21, T21_extrema = normalize(T21, x_min=T21_lr_min, x_max=T21_lr_max)
-        delta, delta_extrema = normalize(delta)
-        vbv, vbv_extrema = normalize(vbv)
+        T21_lr, T21_lr_extrema = normalize(T21_lr, mode="standard")
+        T21, T21_extrema = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std)
+        delta, delta_extrema = normalize(delta, mode="standard")
+        vbv, vbv_extrema = normalize(vbv, mode="standard")
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
     
 
@@ -339,8 +353,8 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
                     MSE_i = MSE_j
                 else:
                     MSE_i = torch.cat([MSE_i, MSE_j], dim=0)
-                if i == 1:
-                    break
+                if i == 0:
+                    break #only do one subbatch for now
         
         else:
             T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
@@ -350,6 +364,8 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
             MSE = MSE_i
         else:
             MSE = torch.cat([MSE, MSE_i], dim=0)
+
+        break #only do one box for now
     
     if multi_gpu:
         MSE_tensor_list = [torch.zeros_like(MSE) for _ in range(torch.distributed.get_world_size())]
@@ -388,8 +404,8 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 4, memory_profiling=
         #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
         #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
         #network = UNet
-        network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=1, # (for tokens?), augment_dim,
-                        model_channels=8, channel_mult=[2,2,2], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+        network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+                        model_channels=32, channel_mult=[2,2,2], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                         embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                         )
         
@@ -417,17 +433,19 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 4, memory_profiling=
     #    SDE = VPSDE(beta_min=0.1, beta_max=20, N=1000)
 
         try:
-            fn = path + "/trained_models/model_11/DDPMpp_norm_lr_nocond_64_{0}_{1}".format(netG.noise_schedule_opt["schedule_type"], model_id)
+            fn = path + "/trained_models/model_11/DDPMpp_lr_standard_labeldim_{0}_64_{1}_{2}".format(netG.network_opt["label_dim"], netG.noise_schedule_opt["schedule_type"], model_id)
             netG.load_network(fn+".pth")
             print("Loaded network at {0}".format(fn), flush=True)
         except Exception as e:
             print(e, flush=True)
             print("Failed to load network at {0}. Starting from scratch.".format(fn+".pth"), flush=True)
 
-        
         train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
                                         redshifts=[10,], IC_seeds=list(range(0,56)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
+        #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_128/", path_IC=path+"/outputs/IC_cubes_128/", 
+        #                                redshifts=[10,], IC_seeds=list(range(1000,1008)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
         #train_dataset, train_dataset_norm, train_dataset_extrema = train_data_module.getFullDataset()
+
         #train_dataloader = torch.utils.data.DataLoader( train_dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, 
         #                                        sampler = DistributedSampler(train_dataset) if multi_gpu else None) #4
         #train_data_norm = torch.utils.data.DataLoader( train_dataset_norm, batch_size=batch_size, shuffle=False if multi_gpu else True, 
@@ -479,7 +497,9 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 4, memory_profiling=
 
 
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
-            print("[{0}]: Epoch {1} in {2:.2f}s | loss min: {3:.4f}, loss history min: {4:.4f}, learning rate: {5:.3e}".format(str(device), len(netG.loss), time.time()-start_time, avg_loss,  torch.min(torch.tensor(netG.loss)).item(), netG.optG.param_groups[0]['lr']), flush=True)
+            print("[{0}]: Epoch {1} in {2:.2f}s | loss: {3:.3f}, mean(loss[-10:]): {4:.3f}, loss min: {5:.3f}, learning rate: {6:.3e}".format(str(device), len(netG.loss), time.time()-start_time, 
+                                                                                                                                              avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), 
+                                                                                                                                              torch.min(torch.tensor(netG.loss)).item(), netG.optG.param_groups[0]['lr']), flush=True)
 
             #if e<4 and multi_gpu: #memory snapshot
             #    try:
@@ -509,21 +529,22 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 4, memory_profiling=
                 if rank==0:
                     print(f"[{device}] Not saving... validation loss={loss_validation:.2f} larger than validation minimum={loss_validation_min:.2f}", flush=True)
 
-        if False:#(avg_loss == torch.min(torch.tensor(netG.loss)).item()) and (len(netG.loss)>=1400):
-            netG.save_network( fn+".pth" )
-            #losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_loss_type="dsq_voxel", device=device, multi_gpu=multi_gpu)
-            
-            if False: #(str(device)=="cuda:0") or (str(device)=="cpu"):
-                print("losses_validation: {0}, loss_validation minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.loss_validation)).item()), flush=True)
+        if False:#len(netG.loss)>=150:
+            if (avg_loss == torch.min(torch.tensor(netG.loss)).item()) or len(netG.loss)%20==0:
+                netG.save_network( fn+".pth" )
+                #losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_loss_type="dsq_voxel", device=device, multi_gpu=multi_gpu)
                 
-                if losses_validation.item() == torch.min(torch.tensor(netG.loss_validation)).item():       
-                    plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=k_and_dsq_and_idx, epoch = e, path = fn+".png", device="cpu")
-                    netG.save_network( fn+".pth" )
-                else:
-                    print("Not saving model. Validaiton did not improve", flush=True)
+                if False: #(str(device)=="cuda:0") or (str(device)=="cpu"):
+                    print("losses_validation: {0}, loss_validation minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.loss_validation)).item()), flush=True)
+                    
+                    if losses_validation.item() == torch.min(torch.tensor(netG.loss_validation)).item():       
+                        plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=k_and_dsq_and_idx, epoch = e, path = fn+".png", device="cpu")
+                        netG.save_network( fn+".pth" )
+                    else:
+                        print("Not saving model. Validaiton did not improve", flush=True)
         
-        if e>=40:
-            if e%10==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
+        if len(netG.loss)>=30:
+            if len(netG.loss)%8==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
                 with netG.ema.average_parameters():
                     loss_validation = validation_step_v2(netG=netG, validation_dataloader=validation_dataloader, split_batch = True, device=device, multi_gpu=multi_gpu)
                 loss_validation_min = torch.min( torch.tensor(netG.loss_validation["loss_validation"]) ).item()
@@ -567,11 +588,11 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        mp.spawn(main, args=(world_size, 100000, 1, False, 17), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        mp.spawn(main, args=(world_size, 100000, 1, False, 30), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
         try:
-            main(rank=0, world_size=0, total_epochs=1, batch_size=1, memory_profiling=False, model_id=17)#2*4)
+            main(rank=0, world_size=0, total_epochs=1, batch_size=1, memory_profiling=False, model_id=30)#2*4)
         except KeyboardInterrupt:
             print('Interrupted', flush=True)
             try:

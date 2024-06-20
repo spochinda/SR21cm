@@ -8,37 +8,20 @@ class VPLoss:
 
     def __call__(self, net, images, conditionals, labels, augment_pipe=None):
         #with torch.autograd.profiler.record_function("## data prep in loss ##"):
-        rnd_uniform = torch.rand([images.shape[0], 1, 1, 1, 1], device=images.device)
-        t = 1 + rnd_uniform * (self.epsilon_t - 1)
-
-        if net.noise_schedule_opt["schedule_type"]=="EDM": 
-            y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
-            sigma = self.sigma(t) #These sigmas range from epsilon_t to 152. Doesn't seem right.
-        elif net.noise_schedule_opt["schedule_type"]=="VPSDE":
-            #y, augment_labels = augment_pipe(images) if augment_pipe is not None else (images, None)
-            y, sigma = net.SDE.marginal_prob(x=images, t=t)
-            #print(f"std {sigma.flatten()}", flush=True)
+        #rnd_uniform = torch.rand([images.shape[0], 1, 1, 1, 1], device=images.device)
+        #t = 1 + rnd_uniform * (self.epsilon_t - 1)
+        t = torch.rand(size=(images.shape[0],1,1,1,1), device=images.device) * (1. - self.epsilon_t) + self.epsilon_t
+        z = torch.randn_like(images)
+        mean, std = net.SDE.marginal_prob(x=images, t=t)
+        perturbed_data = mean + std * z
+        x = torch.cat([perturbed_data, *conditionals], dim = 1)
+        score = net.model(x=x, noise_labels=t.flatten(), class_labels=labels, augment_labels=None) # 999 from wrapper get_score_fn
+        score = -score / std #from wrapper get_score_fn
         
-        #with torch.no_grad(): #only track grad for things that go into the model
-        n = torch.randn_like(y) * sigma
-        y = y + n 
-
-        #with torch.autograd.profiler.record_function("## forward ##"):
-        if net.noise_schedule_opt["schedule_type"]=="EDM":
-            weight = 1 / sigma ** 2
-            D_yn = net.vprecond_forward(x=y, conditionals=conditionals, sigma=sigma, class_labels=labels) #vprecond
-            loss = weight * ((D_yn - y) ** 2)
-        elif net.noise_schedule_opt["schedule_type"]=="VPSDE":
-            #print(f"VP loss \nt: {t.flatten()}\nstd: {sigma.flatten()} \ndevice={y.device}", flush=True)
-            x = torch.cat([y, *conditionals], dim = 1)
-            score = net.model(x=x, noise_labels=t.flatten(), class_labels=labels, augment_labels=None)
-            #loss = torch.square(score  * sigma + n)
-            loss = torch.square(sigma * (score + (y - images) / sigma**2) )
-        else:
-            raise NotImplementedError
+        loss = torch.square(score * std + z)
+        #loss = torch.square(std * (score + (perturbed_data - images) / std**2) )
         
         loss = torch.mean(loss)
-
         return loss
     
 
