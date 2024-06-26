@@ -310,17 +310,6 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
     else:
         raise ValueError("Method must be numpy or torch")
 
-
-def invert_normalization(x, x_extrema):
-    x_min = x_extrema[:,:1]
-    x_max = x_extrema[:,1:2]
-
-    x = ((x + 1) * (x_max - x_min) / 2 ) + x_min
-    
-    #lr_norm_correction_factor = 1.21
-    #x = x * lr_norm_correction_factor
-    return x
-
 @torch.no_grad()
 def get_subcubes(cubes, cut_factor=0):
     if cut_factor > 0:
@@ -339,7 +328,7 @@ def get_subcubes(cubes, cut_factor=0):
         return cubes
     
 @torch.no_grad()
-def normalize(x, mode = "minmax", **kwargs):
+def normalize(x, mode = "standard", **kwargs):
     if mode == "minmax":
         if "x_min" not in kwargs: 
             x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
@@ -365,13 +354,46 @@ def normalize(x, mode = "minmax", **kwargs):
             x_std = torch.std(x, dim=(1,2,3,4), keepdim=True)
         else:
             x_std = kwargs["x_std"]
+        if "factor" not in kwargs:
+            factor = 1
+        else:
+            factor = kwargs["factor"]
 
         x_stats = torch.cat([x_mean, x_std], dim=1)
 
-        x = (x - x_mean) / (2 * x_std) #should the 2 be there? LR std approx. 0.5*HR std
+        x = (x - x_mean) / (factor * x_std) #should the 2 be there? LR std approx. 0.5*HR std
 
         return x, x_stats
-
+    
+@torch.no_grad()
+def invert_normalization(x, mode="standard", **kwargs):
+    if mode == "standard":
+        if "x_stats" in kwargs:
+            x_mean = kwargs["x_stats"][:,:1]
+            x_std = kwargs["x_stats"][:,1:2]
+        else:
+            print("x_mean and x_std not provided. Calculating...", flush=True)
+            x_mean = torch.mean(x, dim=(1,2,3,4), keepdim=True)
+            x_std = torch.std(x, dim=(1,2,3,4), keepdim=True) 
+        if "factor" in kwargs:
+            factor = kwargs["factor"]
+        else:
+            factor = 1.
+        
+        x = x * (factor * x_std) + x_mean
+        return x
+    elif mode == "minmax":
+        if "x_extrema" in kwargs:
+            x_min = kwargs["x_extrema"][:,:1]
+            x_max = kwargs["x_extrema"][:,1:2]
+        else:
+            print("x_min and x_max not provided. Calculating...", flush=True)
+            x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
+            x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
+        
+        x = ((x + 1) * (x_max - x_min) / 2 ) + x_min
+        return x
+    
     
 if __name__ == "__main__":
     pass

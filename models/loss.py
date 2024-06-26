@@ -10,6 +10,10 @@ class VPLoss:
         #with torch.autograd.profiler.record_function("## data prep in loss ##"):
         #rnd_uniform = torch.rand([images.shape[0], 1, 1, 1, 1], device=images.device)
         #t = 1 + rnd_uniform * (self.epsilon_t - 1)
+        #print("T21 stats: ", torch.mean(images, dim=(1,2,3,4), keepdim=False), torch.std(images, dim=(1,2,3,4), keepdim=False),
+        #      "\ndelta stats: ", torch.mean(conditionals[0], dim=(1,2,3,4), keepdim=False), torch.std(conditionals[0], dim=(1,2,3,4), keepdim=False),
+        #      "\nvbv stats: ", torch.mean(conditionals[1], dim=(1,2,3,4), keepdim=False), torch.std(conditionals[1], dim=(1,2,3,4), keepdim=False),
+        #      "\nT21_lr stats:", torch.mean(conditionals[2], dim=(1,2,3,4), keepdim=False), torch.std(conditionals[2], dim=(1,2,3,4), keepdim=False))
         t = torch.rand(size=(images.shape[0],1,1,1,1), device=images.device) * (1. - self.epsilon_t) + self.epsilon_t
         z = torch.randn_like(images)
         mean, std = net.SDE.marginal_prob(x=images, t=t)

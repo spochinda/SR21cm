@@ -11,9 +11,9 @@ from torch.nn import init
 
 from torch_ema import ExponentialMovingAverage
 
-from .utils import *
-from .sde_lib import *
-from .samplers import Sampler
+from utils import *
+from sde_lib import *
+from samplers import Sampler
 
 
 
@@ -50,7 +50,7 @@ class GaussianDiffusion(nn.Module):
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate,) #weight_decay=1e-5)
         self.scheduler = scheduler
         if self.scheduler:
-            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optG, gamma=0.99954, last_epoch=-1)
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optG, gamma=0.992354, last_epoch=-1) #gamma=0.99954 (5000), gamma=0.992354 (300)
         
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.9999)
         self.loss = []
