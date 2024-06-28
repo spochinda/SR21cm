@@ -141,6 +141,7 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
             sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None) # (2**(cut_factor.item()-1))**3 // 2 #4
 
             for j,(T21, delta, vbv, T21_lr) in enumerate(sub_dataloader):
+                #print(f"Sub {j}", flush=True)
 
                 netG.optG.zero_grad()
                 loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
@@ -431,7 +432,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             )
         
 
-        train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
+        train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
                                         redshifts=[10,], IC_seeds=list(range(0,train_models)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
         #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_128/", path_IC=path+"/outputs/IC_cubes_128/", 
         #                                redshifts=[10,], IC_seeds=list(range(1000,1008)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
@@ -445,7 +446,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                                                         sampler = DistributedSampler(train_data_module) if multi_gpu else None)
         
         
-        validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
+        validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
                                         redshifts=[10,], IC_seeds=list(range(train_models,72)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
         validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
                                                         sampler = DistributedSampler(validation_data_module) if multi_gpu else None)
@@ -468,12 +469,16 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                                                             sampler = DistributedSampler(validation_dataset_norm_small) if multi_gpu else None) #4
     
         try:
+            #temporarily suspend load with a raise
+            
             fn = path + "/trained_models/model_13/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}".format(netG.network_opt["model_channels"], 
                                                                                                    len(train_data_module.IC_seeds) * 100 // 80,
                                                                                                    #netG.scheduler.gamma,
                                                                                                    netG.noise_schedule_opt["schedule_type"], 
                                                                                                    model_id)
             netG.model_name = fn.split("/")[-1]
+            
+            raise Exception("Temporarily suspend loading")
             netG.load_network(fn+".pth")
             print("Loaded network at {0}".format(fn), flush=True)
         except Exception as e:
