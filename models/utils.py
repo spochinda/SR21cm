@@ -329,67 +329,37 @@ def get_subcubes(cubes, cut_factor=0):
     
 @torch.no_grad()
 def normalize(x, mode = "standard", **kwargs):
-    if mode == "minmax":
-        if "x_min" not in kwargs: 
-            x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
-        else:
-            x_min = kwargs["x_min"]
-        if "x_max" not in kwargs:
-            x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
-        else:
-            x_max = kwargs["x_max"]
-        
-        x_extrema = torch.cat([x_min, x_max], dim=1)
-        
-        x = (x - x_min) / (x_max - x_min)
-        x = 2 * x - 1
-        return x, x_extrema
-    
-    elif mode == "standard":
-        if "x_mean" not in kwargs:
-            x_mean = torch.mean(x, dim=(1,2,3,4), keepdim=True)
-        else:
-            x_mean = kwargs["x_mean"]
-        if "x_std" not in kwargs:
-            x_std = torch.std(x, dim=(1,2,3,4), keepdim=True)
-        else:
-            x_std = kwargs["x_std"]
-        if "factor" not in kwargs:
-            factor = 1
-        else:
-            factor = kwargs["factor"]
-
-        x_stats = torch.cat([x_mean, x_std], dim=1)
+    if mode == "standard":
+        x_mean = kwargs.pop("x_mean", torch.mean(x, dim=(1,2,3,4), keepdim=True))
+        x_std = kwargs.pop("x_std", torch.std(x, dim=(1,2,3,4), keepdim=True))
+        factor = kwargs.pop("factor", 1.)
 
         x = (x - x_mean) / (factor * x_std) #should the 2 be there? LR std approx. 0.5*HR std
 
-        return x, x_stats
+        return x, x_mean, x_std
+
+    elif mode == "minmax":
+        x_min = kwargs.pop("x_min", torch.amin(x, dim=(1,2,3,4), keepdim=True))
+        x_max = kwargs.pop("x_max", torch.amax(x, dim=(1,2,3,4), keepdim=True))
+        
+        x = (x - x_min) / (x_max - x_min)
+        x = 2 * x - 1
+
+        return x, x_min, x_max
+    
     
 @torch.no_grad()
 def invert_normalization(x, mode="standard", **kwargs):
     if mode == "standard":
-        if "x_stats" in kwargs:
-            x_mean = kwargs["x_stats"][:,:1]
-            x_std = kwargs["x_stats"][:,1:2]
-        else:
-            print("x_mean and x_std not provided. Calculating...", flush=True)
-            x_mean = torch.mean(x, dim=(1,2,3,4), keepdim=True)
-            x_std = torch.std(x, dim=(1,2,3,4), keepdim=True) 
-        if "factor" in kwargs:
-            factor = kwargs["factor"]
-        else:
-            factor = 1.
+        x_mean = kwargs.pop("x_mean", torch.mean(x, dim=(1,2,3,4), keepdim=True))
+        x_std = kwargs.pop("x_std", torch.std(x, dim=(1,2,3,4), keepdim=True))
+        factor = kwargs.pop("factor", 1.)
         
         x = x * (factor * x_std) + x_mean
         return x
     elif mode == "minmax":
-        if "x_extrema" in kwargs:
-            x_min = kwargs["x_extrema"][:,:1]
-            x_max = kwargs["x_extrema"][:,1:2]
-        else:
-            print("x_min and x_max not provided. Calculating...", flush=True)
-            x_min = torch.amin(x, dim=(1,2,3,4), keepdim=True)
-            x_max = torch.amax(x, dim=(1,2,3,4), keepdim=True)
+        x_min = kwargs.pop("x_min", torch.amin(x, dim=(1,2,3,4), keepdim=True))
+        x_max = kwargs.pop("x_max", torch.amax(x, dim=(1,2,3,4), keepdim=True))
         
         x = ((x + 1) * (x_max - x_min) / 2 ) + x_min
         return x

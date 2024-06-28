@@ -33,15 +33,17 @@ with torch.profiler.profile(
 
 prof.export_memory_timeline("memory_trace.html")
 """
+import torch 
 import torch.distributed
 import torch.utils
+
 from utils import *
 from diffusion import *
 from model import *
 from model_edm import SongUNet
 from loss import *
 from sde_lib import VPSDE
-import torch 
+
 
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
@@ -131,10 +133,10 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
         
-        T21_lr, T21_lr_stats = normalize(T21_lr, mode="standard")
-        T21, T21_stats = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.)
-        delta, delta_extrema = normalize(delta, mode="standard")
-        vbv, vbv_extrema = normalize(vbv, mode="standard")
+        T21_lr, T21_lr_ups_mean, T21_lr_ups_std = normalize(T21_lr, mode="standard")
+        T21, T21_mean, T21_std = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.)
+        delta, delta_mean, delta_std = normalize(delta, mode="standard")
+        vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard")
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
@@ -184,8 +186,11 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
     return avg_loss.item()
 
 @torch.no_grad()
-def plot_checkpoint(T21, T21_lr, delta, vbv, T21_pred, netG=None, MSE=None, epoch=None, path = None, device="cpu"):
-    model_idx = 0
+def plot_checkpoint(T21, delta, vbv, T21_lr, T21_pred, netG=None, MSE=None, epoch=None, path = None, device="cpu"):
+    #find model_idx with MSE closest to MSE
+    MSE_sample = torch.mean(torch.square(T21_pred - T21),dim=(1,2,3,4), keepdim=False)
+    model_idx = torch.argmin(torch.abs(MSE_sample - MSE)).item()
+    print("Model_idx: ", model_idx, flush=True)
 
     k_vals_true, dsq_true  = calculate_power_spectrum(T21, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
     k_vals_pred, dsq_pred  = calculate_power_spectrum(T21_pred, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
@@ -209,7 +214,7 @@ def plot_checkpoint(T21, T21_lr, delta, vbv, T21_pred, netG=None, MSE=None, epoc
     fig = plt.figure(figsize=(15,15))
     gs = GS(3, 3, figure=fig,) #height_ratios=[1,1,1.5])
 
-
+    #row 1 (inputs)
     ax_delta = fig.add_subplot(gs[0,0])#, wspace = 0.2)
     ax_vbv = fig.add_subplot(gs[0,1])
     ax_T21_lr = fig.add_subplot(gs[0,2])
@@ -226,9 +231,18 @@ def plot_checkpoint(T21, T21_lr, delta, vbv, T21_pred, netG=None, MSE=None, epoc
     ax_T21_lr.imshow(T21_lr[model_idx,0,slice_idx],)
     ax_T21_lr.set_title("T21 LR (input)")
 
+    #row 2 (outputs)
+    sgs = SGS(1,4, gs[1,:], width_ratios=[10,10,10,1])
+    #ax_dsq = fig.add_subplot(sgs_dsq[0])
+    
+    ax_T21 = fig.add_subplot(sgs[0])
+    ax_T21_pred = fig.add_subplot(sgs[1])
+    ax_T21_resid = fig.add_subplot(sgs[2])
+    ax_T21_resid_cbar = fig.add_subplot(sgs[3])
 
-    ax_T21 = fig.add_subplot(gs[1,0])
-    ax_T21_pred = fig.add_subplot(gs[1,1])
+    #ax_T21 = fig.add_subplot(gs[1,0])
+    #ax_T21_pred = fig.add_subplot(gs[1,1])
+    #ax_T21_resid = fig.add_subplot(gs[1,2])
 
     vmin = torch.amin(T21[model_idx,0,slice_idx]).item()
     vmax = torch.amax(T21[model_idx,0,slice_idx]).item()
@@ -236,66 +250,84 @@ def plot_checkpoint(T21, T21_lr, delta, vbv, T21_pred, netG=None, MSE=None, epoc
     ax_T21.set_title("T21 HR (Real)")
     
     ax_T21_pred.imshow(T21_pred[model_idx,0,slice_idx], vmin=vmin, vmax=vmax)
-    ax_T21_pred.set_title(f"T21 SR (Generated) epoch {epoch}")
+    ax_T21_pred.set_title(f"T21 SR (Generated) epoch {len(netG.loss)}")
+
+    T21_resid = T21_pred - T21
+    slice_std  = torch.std(T21_resid[model_idx,0,slice_idx]).item()
+    slice_mean = torch.mean(T21_resid[model_idx,0,slice_idx]).item()
+    ax_T21_resid.imshow(T21_resid[model_idx,0,slice_idx], vmin=slice_mean-3*slice_std, vmax=slice_mean+3*slice_std)
+    ax_T21_resid.set_title("T21 SR - T21 HR")
+
+    cbar = plt.colorbar(ax_T21_resid.imshow(T21_resid[model_idx,0,slice_idx], vmin=slice_mean-3*slice_std, vmax=slice_mean+3*slice_std), cax=ax_T21_resid_cbar, label="Residuals [mK]")
 
 
-    ax_hist = fig.add_subplot(gs[2,0])
-    ax_hist.hist(T21[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
-    ax_hist.hist(T21_pred[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
-    ax_hist.set_xlabel("Norm. $T_{{21}}$")
+    #row 3 (statistics)
+    sgs = SGS(2,3, gs[2,:], height_ratios=[4,1], hspace=0.)
+
+    ax_hist = fig.add_subplot(sgs[0,0])
+    ax_hist_resid = fig.add_subplot(sgs[1,0], sharex=ax_hist)
+    
+    ax_hist_shift = fig.add_subplot(sgs[:,1])
+    
+    ax_dsq = fig.add_subplot(sgs[0,2])
+    ax_dsq_resid = fig.add_subplot(sgs[1,2], sharex=ax_dsq)
+
+
+    
+    max_value = max(torch.amax(T21[model_idx,0,:,:,:]).item(), torch.amax(T21_pred[model_idx,0,:,:,:]).item())
+    min_value = min(torch.amin(T21[model_idx,0,:,:,:]).item(), torch.amin(T21_pred[model_idx,0,:,:,:]).item())
+    bins = np.linspace(min_value, max_value, 100)
+    hist_true, _ = np.histogram(T21[model_idx,0,:,:,:].flatten(), bins=bins)
+    hist_pred, _ = np.histogram(T21_pred[model_idx,0,:,:,:].flatten(), bins=bins)  # Reuse the same bins for consistency
+    hist_true = hist_true / np.sum(hist_true)
+    hist_pred = hist_pred / np.sum(hist_pred)
+    ax_hist.bar(bins[:-1], hist_true, width=bins[1] - bins[0], alpha=0.5, label="T21 HR", )#color='orange')
+    ax_hist.bar(bins[:-1], hist_pred, width=bins[1] - bins[0], alpha=0.5, label="T21 SR", )#color='blue')
+
+    hist_resid = np.abs(hist_true - hist_pred)
+    hist_resid = hist_resid / np.sum(hist_resid)
+    ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="|Residuals|", color='k')
+
+    #ax.bar(bins[:-1], diff, width=bins[1] - bins[0], color='skyblue')
+
+    #ax_hist.hist(T21[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
+    #ax_hist.hist(T21_pred[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
+    ax_hist.set_xlabel("$T_{{21}}$ [mK]")
     ax_hist.set_ylabel("PDF")
     ax_hist.legend()
-    ax_hist.set_title(f"Sample MSE: {MSE:.4f}")
+    ax_hist.set_title(f"Sample RMSE: {MSE**0.5:.4f}")
+    ax_hist.grid()
 
-    ax_dsq = fig.add_subplot(gs[2,1])
+    ax_hist_resid.set_xlabel("$T_{{21}}$ [mK]")
+    ax_hist_resid.set_ylabel("|Residuals| [mk]")
+    ax_hist_resid.grid()
+
+
+
+    mean_T_pred = torch.mean(T21_pred, dim=(1,2,3,4), keepdim=False)
+    mean_T_true = torch.mean(T21, dim=(1,2,3,4), keepdim=False)
+    ax_hist_shift.hist((mean_T_pred-mean_T_true).flatten(), bins=100, alpha=0.5, label="Predicted", density=True)
+    ax_hist_shift.set_xlabel("Sample difference in mean [mK]")
+
+
+
+
     ax_dsq.plot(k_vals_true, dsq_true[model_idx,0], label="T21 HR", ls='solid', lw=2)
     ax_dsq.plot(k_vals_pred, dsq_pred[model_idx,0], label="T21 SR", ls='solid', lw=2)
-    ax_dsq.set_ylabel('$\Delta^2(k)_\\mathrm{{norm}}$')
-    ax_dsq.set_xlabel('$k$')
+    ax_dsq.set_ylabel('$\Delta^2(k)_{{21}}$ [mK$^2$]')
+    #ax_dsq.set_xlabel('$k$ [h/Mpc]')
     ax_dsq.set_yscale('log')
     ax_dsq.grid()
     ax_dsq.legend()
 
+    dsq_resid = torch.abs(dsq_pred[model_idx,0] - dsq_true[model_idx,0])
+    ax_dsq_resid.plot(k_vals_true, dsq_resid, lw=2, color='k')
+    ax_dsq_resid.set_ylabel("|Residuals| [mK$^2$]")
+    ax_dsq_resid.set_xlabel("$k$ [h/Mpc]")
+    ax_dsq_resid.set_yscale('log')
+    ax_dsq_resid.grid()
 
-
-    if False:
-        sgs = SGS(1,2, gs[2,:])
-        sgs_dsq = SGS(2,1, sgs[0], height_ratios=[4,1], hspace=0, )
-        ax_dsq = fig.add_subplot(sgs_dsq[0])
-        ax_dsq.get_xaxis().set_visible(False)
-        ax_dsq_resid = fig.add_subplot(sgs_dsq[1], sharex=ax_dsq)
-        ax_dsq_resid.set_ylabel("|Residuals|")#("$\Delta^2(k)_\\mathrm{{SR}} - \Delta^2(k)_\\mathrm{{HR}}$")
-        ax_dsq_resid.set_xlabel("$k$")
-        ax_dsq_resid.set_yscale('log')
-        ax_dsq_resid.grid()
-        
-        #ax_dsq.plot(k_vals_true, dsq_pred[:,0].T, alpha=0.02, color='k', ls='solid')
-        ax_dsq.plot(k_vals_true, dsq_true[model_idx,0], label="T21 HR", ls='solid', lw=2)
-        ax_dsq.plot(k_vals_pred, dsq_pred[model_idx,0], label="T21 SR", ls='solid', lw=2)
-
-        ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[:,0] - dsq_true[:,0]).T, color='k', alpha=0.02)
-        ax_dsq_resid.plot(k_vals_true, torch.abs(dsq_pred[model_idx,0] - dsq_true[model_idx,0]), lw=2, )
-
-        
-        ax_dsq.set_ylabel('$\Delta^2(k)_\\mathrm{{norm}}$')
-        #ax_dsq.set_xlabel('$k$')
-        ax_dsq.set_yscale('log')
-        ax_dsq.grid()
-        ax_dsq.legend()
-        ax_dsq.set_title("Power Spectrum (output)")
-
-
-        ax_hist = fig.add_subplot(sgs[1])
-        ax_hist.hist(x_pred[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
-        ax_hist.hist(x_true[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
-        
-        ax_hist.set_xlabel("Norm. $T_{{21}}$")
-        ax_hist.set_ylabel("PDF")
-        ax_hist.legend()
-        ax_hist.grid()
-        ax_hist.set_title("Pixel Histogram (output)")
-
-    plt.savefig(path + netG.model_name + "_epoch_{0}.png".format(epoch))
+    plt.savefig(path + netG.model_name + f"_epoch_{len(netG.loss)}.png".format(epoch))
     plt.close()
 
 @torch.no_grad()
@@ -329,36 +361,51 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
         
-        T21_lr, _ = normalize(T21_lr, mode="standard")
-        T21, T21_stats = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.)
-        delta, _ = normalize(delta, mode="standard")
-        vbv, _ = normalize(vbv, mode="standard")
+        T21_lr, T21_lr_ups_mean, T21_lr_ups_std = normalize(T21_lr, mode="standard")
+        T21, T21_mean, T21_std = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.)
+        delta, delta_mean, delta_std = normalize(delta, mode="standard")
+        vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard")
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
     
-
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
-            sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_stats)
+            sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std)
             sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=(2**(cut_factor.item()-1))**3, shuffle=False, sampler = None) 
             
-            for j,(T21, delta, vbv, T21_lr, T21_stats) in tqdm(enumerate(sub_dataloader), desc='validation loop', total=len(sub_dataloader), disable=True):
-                T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
+            for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='validation loop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
+                T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
                 
-                T21_pred = invert_normalization(T21_pred[:,-1:], mode="standard", x_stats = T21_stats, factor=2.)
-                T21 = invert_normalization(T21, mode="standard", x_stats = T21_stats, factor=2.)
+                T21_pred_j = invert_normalization(T21_pred_j[:,-1:], mode="standard", x_mean = T21_lr_mean, x_std = T21_lr_std, factor=2.)
+                T21 = invert_normalization(T21, mode="standard", x_mean = T21_lr_mean, x_std = T21_lr_std, factor=2.)
 
-                MSE_j = torch.mean(torch.square(T21_pred[:,-1:] - T21),dim=(1,2,3,4), keepdim=False)
+                MSE_j = torch.mean(torch.square(T21_pred_j[:,-1:] - T21),dim=(1,2,3,4), keepdim=False)
                 if j == 0:
                     MSE_i = MSE_j
                 else:
                     MSE_i = torch.cat([MSE_i, MSE_j], dim=0)
-                if i == 0:
-                    break #only do one subbatch for now
+
+                if i==j==0:
+                    T21_i = T21
+                    delta_i = delta
+                    vbv_i = vbv
+                    T21_lr_i = T21_lr
+                    T21_pred_i = T21_pred_j
+                else:
+                    T21_i = torch.cat([T21_i, T21], dim=0)
+                    delta_i = torch.cat([delta_i, delta], dim=0)
+                    vbv_i = torch.cat([vbv_i, vbv], dim=0)
+                    T21_lr_i = torch.cat([T21_lr_i, T21_lr], dim=0)
+                    T21_pred_i = torch.cat([T21_pred_i, T21_pred_j], dim=0)
+                #if j == 0:
+                #    break #only do one subbatch for now
         
         else:
-            T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
-            T21_pred = invert_normalization(T21_pred[:,-1:], mode="standard", x_stats = T21_stats, factor=2.)
-            T21 = invert_normalization(T21, mode="standard", x_stats = T21_stats, factor=2.)
-            MSE_i = torch.mean(torch.square(T21_pred[:,-1:] - T21),dim=(1,2,3,4), keepdim=False)
+            T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
+            T21_pred_i = invert_normalization(T21_pred_i[:,-1:], mode="standard", x_mean = T21_lr_mean, x_std = T21_lr_std, factor=2.)
+            T21_i = invert_normalization(T21, mode="standard", x_mean = T21_lr_mean, x_std = T21_lr_std, factor=2.)
+            delta_i = delta
+            vbv_i = vbv
+            T21_lr_i = T21_lr
+            MSE_i = torch.mean(torch.square(T21_pred_i[:,-1:] - T21),dim=(1,2,3,4), keepdim=False)
         
         if i == 0:
             MSE = MSE_i
@@ -371,13 +418,31 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
         MSE_tensor_list = [torch.zeros_like(MSE) for _ in range(torch.distributed.get_world_size())]
         torch.distributed.all_gather(tensor_list=MSE_tensor_list, tensor=MSE)
         MSE = torch.cat(MSE_tensor_list, dim=0)
+
+        T21_tensor_list = [torch.zeros_like(T21_i) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensor_list=T21_tensor_list, tensor=T21_i)
+        T21 = torch.cat(T21_tensor_list, dim=0)
+
+        T21_lr_tensor_list = [torch.zeros_like(T21_lr_i) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensor_list=T21_lr_tensor_list, tensor=T21_lr_i)
+        T21_lr = torch.cat(T21_lr_tensor_list, dim=0)
+
+        delta_tensor_list = [torch.zeros_like(delta_i) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensor_list=delta_tensor_list, tensor=delta_i)
+        delta = torch.cat(delta_tensor_list, dim=0)
+
+        vbv_tensor_list = [torch.zeros_like(vbv_i) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensor_list=vbv_tensor_list, tensor=vbv_i)
+        vbv = torch.cat(vbv_tensor_list, dim=0)
+
+        T21_pred_tensor_list = [torch.zeros_like(T21_pred_i) for _ in range(torch.distributed.get_world_size())]
+        torch.distributed.all_gather(tensor_list=T21_pred_tensor_list, tensor=T21_pred_i)
+        T21_pred = torch.cat(T21_pred_tensor_list, dim=0)
+    
+    
     MSE = torch.mean(MSE).item()
 
-    if str(device)=="cuda:0":
-        path = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels/"
-        plot_checkpoint(T21=T21, T21_lr=T21_lr, delta=delta, vbv=vbv, T21_pred=T21_pred[:,-1:], netG=netG, MSE=MSE, epoch=len(netG.loss), path = path, device=device)
-
-    return MSE
+    return MSE, [T21, delta, vbv, T21_lr, T21_pred]
 
 
 ###START main pytorch multi-gpu tutorial###
@@ -468,12 +533,15 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                                                             sampler = DistributedSampler(validation_dataset_norm_small) if multi_gpu else None) #4
     
         try:
-            fn = path + "/trained_models/model_13/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}".format(netG.network_opt["model_channels"], 
+            fn = path + "/trained_models/model_14/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}".format(netG.network_opt["model_channels"], 
                                                                                                    len(train_data_module.IC_seeds) * 100 // 80,
                                                                                                    #netG.scheduler.gamma,
                                                                                                    netG.noise_schedule_opt["schedule_type"], 
                                                                                                    model_id)
             netG.model_name = fn.split("/")[-1]
+            #temporarily supend loading with raise
+            raise Exception("Loading disabled")
+
             netG.load_network(fn+".pth")
             print("Loaded network at {0}".format(fn), flush=True)
         except Exception as e:
@@ -550,12 +618,15 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             if len(netG.loss)%20==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
                 start_time_validation = time.time()
                 with netG.ema.average_parameters():
-                    loss_validation = validation_step_v2(netG=netG, validation_dataloader=validation_dataloader, split_batch = True, device=device, multi_gpu=multi_gpu)
+                    loss_validation, tensors = validation_step_v2(netG=netG, validation_dataloader=validation_dataloader, split_batch = True, device=device, multi_gpu=multi_gpu)
                 validation_time = time.time()-start_time_validation
                 loss_validation_min = torch.min( torch.tensor(netG.loss_validation["loss_validation"]) ).item()
                 if loss_validation < loss_validation_min:
                     if rank==0:
                         print(f"[{device}] Validation took {validation_time:.2f}s, validation loss={loss_validation:.2f} smaller than minimum={loss_validation_min:.2f}", flush=True)
+                        #print(f"[{device}] tensors[0].shape: {tensors[0].shape}", flush=True)
+                        path = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_2/"
+                        plot_checkpoint(*tensors, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path, device=device)
                     netG.save_network(fn+".pth")
                     netG.loss_validation["loss_validation"].append(loss_validation)
 
@@ -600,9 +671,9 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        for channel in [32, 16, 8, 4]:
-            for n_models in [56, 28, 1]:
-                mp.spawn(main, args=(world_size, 500, 1, n_models, channel, False, 2), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+        for channel in [32,]: #[32, 16, 8, 4]
+            for n_models in [56,]: #[56, 28, 1]
+                mp.spawn(main, args=(world_size, 1000, 1, n_models, channel, False, 3), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
         try:

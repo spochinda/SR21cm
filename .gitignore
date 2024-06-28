@@ -2,11 +2,11 @@ IC/
 notebooks/*
 outputs/
 analysis/
+!analysis/sampling_stepsize.py
+!analysis/sampling_models_rmse.py
 models/__pycache__
 plots/*
 trained_models/*
-!plots/critic_model.png
-!plots/generator_model.png
 **/*.DS_Store
 slurm*
 *.err
