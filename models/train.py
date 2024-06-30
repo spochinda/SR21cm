@@ -242,7 +242,6 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_dsq_resid = fig.add_subplot(sgs[1,i], sharex=ax_dsq, sharey=None if i==0 else ax_dsq_resid)
         k_vals_true, dsq_true  = calculate_power_spectrum(T21[idx:idx+1], Lpix=3, kbins=100, dsq = True, method="torch", device="cpu")
         k_vals_pred, dsq_pred  = calculate_power_spectrum(T21_pred[idx:idx+1], Lpix=3, kbins=100, dsq = True, method="torch", device="cpu")
-        print("dsq shapes: ", dsq_true.shape, dsq_pred.shape)
         ax_dsq.plot(k_vals_true, dsq_true[0,0], label="T21 HR", ls='solid', lw=2)
         ax_dsq.plot(k_vals_pred, dsq_pred[0,0], label="T21 SR", ls='solid', lw=2)
         ax_dsq.set_ylabel('$\Delta^2(k)_{{21}}$ [mK$^2$]')
@@ -258,8 +257,8 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_dsq_resid.set_yscale('log')
         ax_dsq_resid.grid()
         
-        plt.savefig(path + netG.model_name + f"quantiles_epoch_{len(netG.loss)}.png")
-        plt.close()
+    plt.savefig(path + netG.model_name + f"_quantiles_epoch_{len(netG.loss)}.png")
+    plt.close()
 
 
 @torch.no_grad()
@@ -267,7 +266,7 @@ def plot_checkpoint(T21, delta, vbv, T21_lr, T21_pred, netG=None, MSE=None, epoc
     #find model_idx with MSE closest to MSE
     MSE_sample = torch.mean(torch.square(T21_pred - T21),dim=(1,2,3,4), keepdim=False)
     model_idx = torch.argmin(torch.abs(MSE_sample - MSE)).item()
-    print("Model_idx: ", model_idx, flush=True)
+    #print("Model_idx: ", model_idx, flush=True)
 
     k_vals_true, dsq_true  = calculate_power_spectrum(T21, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
     k_vals_pred, dsq_pred  = calculate_power_spectrum(T21_pred, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
@@ -372,7 +371,7 @@ def plot_checkpoint(T21, delta, vbv, T21_lr, T21_pred, netG=None, MSE=None, epoc
     ax_hist.set_xlabel("$T_{{21}}$ [mK]")
     ax_hist.set_ylabel("PDF")
     ax_hist.legend()
-    ax_hist.set_title(f"Model {model_idx} RMSE={MSE_sample[model_idx].item()**0.5:.3f}mK (Sample RMSE={MSE**0.5:.3f}mK)")
+    ax_hist.set_title(f"Model {model_idx} RMSE={MSE_sample[model_idx].item()**0.5:.3f}mK \n(Sample RMSE={MSE**0.5:.3f}mK)")
     ax_hist.grid()
 
     ax_hist_resid.set_xlabel("$T_{{21}}$ [mK]")
