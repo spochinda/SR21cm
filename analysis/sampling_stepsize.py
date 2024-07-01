@@ -37,8 +37,8 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
         device = "cpu"
 
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
-    model_pth = path + "/trained_models/model_14/DDPMpp_standard_channels_32_tts_70_VPSDE_3.pth"
-    fn = path + "/analysis/model_14/" + model_pth.split("/")[-1].split(".")[0] + "_sample_steps.pth"
+    model_pth = path + "/trained_models/model_1/DDPMpp_standard_channels_32_tts_70_VPSDE_1_fac33.pth"
+    fn = path + "/analysis/model_1/" + model_pth.split("/")[-1].split(".")[0] + "_sample_steps.pth"
 
     try:
         print("Loading MSE...", flush=True)
@@ -52,7 +52,8 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
         loaded = False
         batch_size = 1
 
-        test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
+        #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
+        test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
                                             redshifts=[10,], IC_seeds=list(range(72,80)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
         test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
                                                             sampler = DistributedSampler(test_data_module) if multi_gpu else None)                
@@ -91,7 +92,7 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
                 print("repeat: ", i, flush=True)
             
             for j,nsteps in tqdm(enumerate(steps), desc="Steps", total=len(steps), disable=False if rank==0 else True):
-                mse = torch.tensor(0., device=rank)
+                #mse = torch.tensor(0., device=rank)
                 for k,(T21, delta, vbv, T21_lr, labels) in tqdm(enumerate(test_dataloader), desc=model_pth.split("/")[-1], total=len(test_dataloader), disable=True):
                     T21_lr, T21, delta, vbv = T21_lr.to(device), T21.to(device), delta.to(device), vbv.to(device)
 
@@ -102,39 +103,45 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
 
                     T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
                     T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+                    T21_lr_orig = T21_lr #to save later
+
                     T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
 
-                    T21_lr, _, _ = normalize(T21_lr, mode="standard") 
-                    T21, _, _ = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.) #factor=2 for all inputs but should only be 2 for HR input in future
-                    delta, _, _ = normalize(delta, mode="standard")
-                    vbv, _, _ = normalize(vbv, mode="standard")
+                    T21_lr, _, _ = normalize(T21_lr, mode="standard", factor=3.) 
+                    T21, _, _ = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=3.) #factor=2 for all inputs but should only be 2 for HR input in future
+                    delta, delta_mean, delta_std = normalize(delta, mode="standard", factor=3.)
+                    vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard", factor=3.)
 
                     if rank==0:
                         print("Shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape, flush=True)
 
-                    sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std)
+                    sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std)
                     sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None)
 
-                    for z,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc="Sub", total=len(sub_dataloader), disable=False if rank==0 else True):
+                    for z,(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std) in tqdm(enumerate(sub_dataloader), desc="Sub", total=len(sub_dataloader), disable=False if rank==0 else True):
 
                         if ema:
                             with netG.ema.average_parameters():
                                 if i==j==k==z==rank==0:
                                     print("EMA evaluation ", flush=True)
                                 if not ode_sampling:
-                                    T21_pred_z = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=nsteps, eps=1e-3, clip_denoised=False, verbose=False)
+                                    #print("labels: ", labels, flush=True)
+                                    T21_pred_z = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=nsteps, eps=1e-3, clip_denoised=False, verbose=False)
                                 else:
                                     T21_pred_z = netG.sample.ode_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, atol=nsteps, rtol=nsteps, eps=1e-3).to(rank)
                         else:
                             if i==j==k==z==rank==0:
                                 print("Disable EMA evaluation ", flush=True)
                             if not ode_sampling:
-                                T21_pred_z = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=nsteps, eps=1e-3, clip_denoised=False, verbose=False)
+                                T21_pred_z = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=nsteps, eps=1e-3, clip_denoised=False, verbose=False)
                             else:
                                 T21_pred_z = netG.sample.ode_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], atol=nsteps, rtol=nsteps, eps=1e-3).to(rank)
 
-                        T21_pred_z = invert_normalization(T21_pred_z[:,-1:], mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.)
-                        T21_z = invert_normalization(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=2.)
+                        T21_pred_z = invert_normalization(T21_pred_z[:,-1:], mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=3.)
+                        T21_z = invert_normalization(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=3.)
+
+                        delta = invert_normalization(delta, mode="standard", x_mean=delta_mean, x_std=delta_std, factor=3.)
+                        vbv = invert_normalization(vbv, mode="standard", x_mean=vbv_mean, x_std=vbv_std, factor=3.)
 
 
                         if z==0:
@@ -146,9 +153,18 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
                         if k==z==0:
                             T21_pred_k = T21_pred_z
                             T21_k = T21_z
+
+                            T21_lr_orig_all = T21_lr_orig
+                            delta_all = delta
+                            vbv_all = vbv
                         else:
                             T21_pred_k = torch.cat([T21_pred_k, T21_pred_z], dim=0)
                             T21_k = torch.cat([T21_k, T21_z], dim=0)
+
+                            T21_lr_orig_all = torch.cat([T21_lr_orig_all, T21_lr_orig], dim=0)
+                            delta_all = torch.cat([delta_all, delta], dim=0)
+                            vbv_all = torch.cat([vbv_all, vbv], dim=0)
+
 
                     if k==0:
                         MSE_k = MSE_z
@@ -167,8 +183,27 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
                 T21_tensor_list = [torch.zeros_like(T21_k) for _ in range(world_size)]
                 torch.distributed.all_gather(tensor_list=T21_tensor_list, tensor=T21_k)
                 T21 = torch.cat(T21_tensor_list, dim=0)
+                
+                T21_lr_orig_all_tensor_list = [torch.zeros_like(T21_lr_orig_all) for _ in range(torch.distributed.get_world_size())]
+                torch.distributed.all_gather(tensor_list=T21_lr_orig_all_tensor_list, tensor=T21_lr_orig_all)
+                T21_lr_orig_all = torch.cat(T21_lr_orig_all_tensor_list, dim=0)
+
+                delta_all_tensor_list = [torch.zeros_like(delta_all) for _ in range(torch.distributed.get_world_size())]
+                torch.distributed.all_gather(tensor_list=delta_all_tensor_list, tensor=delta_all)
+                delta_all = torch.cat(delta_all_tensor_list, dim=0)
+
+                vbv_all_tensor_list = [torch.zeros_like(vbv_all) for _ in range(torch.distributed.get_world_size())]
+                torch.distributed.all_gather(tensor_list=vbv_all_tensor_list, tensor=vbv_all)
+                vbv_all = torch.cat(vbv_all_tensor_list, dim=0)
                 torch.distributed.barrier()
-                torch.save(obj=dict(T21 = T21, T21_pred = T21_pred), f=path + "/analysis/model_14/" + model_pth.split("/")[-1].split(".")[0] + f"_sample_steps_{nsteps}.pth")
+                
+                save_dict = dict(T21 = T21, T21_pred = T21_pred, delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all)
+                torch.save(obj=save_dict, 
+                           f=path + "/analysis/model_1/" + model_pth.split("/")[-1].split(".")[0] + f"_sample_steps_{nsteps}.pth")
+                
+                MSE_temp = torch.sqrt(torch.mean(torch.square(T21_pred - T21))).item()
+                if rank==0:
+                    print(f"Steps={nsteps}, MSE={MSE_temp:.4f} ", MSE_temp, flush=True)
 
             if i==0:
                 MSE_i = MSE_j
@@ -274,7 +309,7 @@ if __name__ == "__main__":
     if multi_gpu:
         print("Spawning processes", flush=True)#100,300,500,1000
         start_time = time.time()
-        mp.spawn(sample_steps, args=(1, [10, 20, 30, 40, 60, 100, 300, 600, 1000], 2, False, True, multi_gpu), nprocs=world_size) #3.5 hrs
+        mp.spawn(sample_steps, args=(1, [100], 2, False, True, multi_gpu), nprocs=world_size) #3.5 hrs [10, 20, 30, 40, 60, 100, 300, 600, 1000]
         #mp.spawn(sample_steps, args=(1, [1e-5, ], i, True, multi_gpu), nprocs=world_size)
         print("Time taken: {0:.2f}".format(time.time()-start_time), flush=True)
     else:
