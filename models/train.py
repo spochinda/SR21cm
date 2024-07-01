@@ -453,6 +453,12 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
             for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='validation loop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
                 T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
                 
+                if str(device)=="cuda:0":
+                    try:
+                        print(f"Shapes and min/max of input: T21: {T21.shape}, {torch.amin(T21).item()}, {torch.amax(T21).item()} \nDelta: {delta.shape}, {torch.amin(delta).item()}, {torch.amax(delta).item()} \nVbv: {vbv.shape}, {torch.amin(vbv).item()}, {torch.amax(vbv).item()} \nT21_lr: {T21_lr.shape}, {torch.amin(T21_lr).item()}, {torch.amax(T21_lr).item()} \nT21_lr_mean: {T21_lr_mean.shape}, {torch.amin(T21_lr_mean).item()}, {torch.amax(T21_lr_mean).item()} \nT21_lr_std: {T21_lr_std.shape}, {torch.amin(T21_lr_std).item()}, {torch.amax(T21_lr_std).item()} \nT21_pred: {T21_pred_j.shape}, {torch.amin(T21_pred_j).item()}, {torch.amax(T21_pred_j).item()}", flush=True)
+                    except Exception as e:
+                        pass
+
                 T21_pred_j = invert_normalization(T21_pred_j[:,-1:], mode="standard", factor=3., x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
                 T21 = invert_normalization(T21, mode="standard", factor=3., x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
 
@@ -614,7 +620,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                                                             sampler = DistributedSampler(validation_dataset_norm_small) if multi_gpu else None) #4
     
         try:
-            fn = path + "/trained_models/model_1/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}_fac33".format(netG.network_opt["model_channels"], 
+            fn = path + "/trained_models/model_1/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}_fac33test".format(netG.network_opt["model_channels"], 
                                                                                                    len(train_data_module.IC_seeds) * 100 // 80,
                                                                                                    #netG.scheduler.gamma,
                                                                                                    netG.noise_schedule_opt["schedule_type"], 
@@ -693,10 +699,10 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         netG.save_network( fn+".pth" )
                     else:
                         print("Not saving model. Validaiton did not improve", flush=True)
-        if netG.network_opt["model_channels"] >=16:
+        if netG.network_opt["model_channels"] >=8:
             validation_check_epoch = 250
         else:
-            validation_check_epoch = 250
+            validation_check_epoch = 750
         if len(netG.loss)>=validation_check_epoch:
             if len(netG.loss)%20==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
                 start_time_validation = time.time()
@@ -712,6 +718,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)
                         plot_sigmas(**tensor_dict, netG=netG, path = path_plot,  quantiles=[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
                     netG.save_network(fn+".pth")
+                    print("Weights: ", netG.model.enc["64x64_conv"].weight[0,0,0])
                     not_saved = 0
                     netG.loss_validation["loss_validation"].append(loss_validation)
 
@@ -756,8 +763,8 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        for channel in [32, 16, 8, 4]: #[32, 16, 8, 4]
-            for n_models in [56, 28, 1]: #[56, 28, 1]
+        for channel in [4,]: #[32, 16, 8, 4]
+            for n_models in [56,]: #[56, 28, 1]
                 mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, False, 1), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
