@@ -1,7 +1,7 @@
 IC/
 notebooks/*
 outputs/
-analysis/
+analysis/*
 !analysis/sampling_stepsize.py
 !analysis/sampling_models_rmse.py
 models/__pycache__
