@@ -529,6 +529,86 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
 
     return MSE, dict(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, T21_pred=T21_pred)
 
+@torch.no_grad()
+def save_test_data(netG, test_dataloader, path, cut_factor=2, device="cpu"):
+    rank = torch.distributed.get_rank()
+    for i,(T21, delta, vbv, T21_lr, labels) in tqdm(enumerate(test_dataloader), desc="Iterating over test data", total=len(test_dataloader), disable=False if rank==0 else True):
+        T21_lr, T21, delta, vbv = T21_lr.to(device), T21.to(device), delta.to(device), vbv.to(device)
+
+        T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
+        delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
+        vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
+        T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+
+        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_orig = T21_lr #to save later
+
+        T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
+
+        T21_lr, _, _ = normalize(T21_lr, mode="standard", factor=3.) 
+        T21, _, _ = normalize(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=3.) #factor=2 for all inputs but should only be 2 for HR input in future
+        delta, delta_mean, delta_std = normalize(delta, mode="standard", factor=3.)
+        vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard", factor=3.)
+
+        sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std)
+        sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None)
+
+        for j,(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std) in tqdm(enumerate(sub_dataloader), desc="Iterating split batch", total=len(sub_dataloader), disable=False if rank==0 else True):
+            #netG.model.eval()#is inside EUler_Maruyama_sampler already
+            with netG.ema.average_parameters():
+                T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
+
+            T21_pred_j = invert_normalization(T21_pred_j[:,-1:], mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=3.)
+            T21_j = invert_normalization(T21, mode="standard", x_mean=T21_lr_mean, x_std=T21_lr_std, factor=3.)
+
+            delta = invert_normalization(delta, mode="standard", x_mean=delta_mean, x_std=delta_std, factor=3.)
+            vbv = invert_normalization(vbv, mode="standard", x_mean=vbv_mean, x_std=vbv_std, factor=3.)
+            
+            if i==j==0:
+                T21_pred_i = T21_pred_j
+                T21_i = T21_j
+
+                T21_lr_orig_all = T21_lr_orig
+                delta_all = delta
+                vbv_all = vbv
+            else:
+                T21_pred_i = torch.cat([T21_pred_i, T21_pred_j], dim=0)
+                T21_i = torch.cat([T21_i, T21_j], dim=0)
+
+                T21_lr_orig_all = torch.cat([T21_lr_orig_all, T21_lr_orig], dim=0)
+                delta_all = torch.cat([delta_all, delta], dim=0)
+                vbv_all = torch.cat([vbv_all, vbv], dim=0)
+
+    T21_pred_tensor_list = [torch.zeros_like(T21_pred_i) for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensor_list=T21_pred_tensor_list, tensor=T21_pred_i)
+    T21_pred = torch.cat(T21_pred_tensor_list, dim=0)
+
+    T21_tensor_list = [torch.zeros_like(T21_i) for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensor_list=T21_tensor_list, tensor=T21_i)
+    T21 = torch.cat(T21_tensor_list, dim=0)
+
+    T21_lr_orig_all_tensor_list = [torch.zeros_like(T21_lr_orig_all) for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensor_list=T21_lr_orig_all_tensor_list, tensor=T21_lr_orig_all)
+    T21_lr_orig_all = torch.cat(T21_lr_orig_all_tensor_list, dim=0)
+
+    delta_all_tensor_list = [torch.zeros_like(delta_all) for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensor_list=delta_all_tensor_list, tensor=delta_all)
+    delta_all = torch.cat(delta_all_tensor_list, dim=0)
+
+    vbv_all_tensor_list = [torch.zeros_like(vbv_all) for _ in range(torch.distributed.get_world_size())]
+    torch.distributed.all_gather(tensor_list=vbv_all_tensor_list, tensor=vbv_all)
+    vbv_all = torch.cat(vbv_all_tensor_list, dim=0)
+    
+
+    MSE_temp = torch.sqrt(torch.mean(torch.square(T21_pred - T21))).item()
+    if rank==0:
+        save_dict = dict(T21 = T21, T21_pred = T21_pred, delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all)
+        torch.save(obj=save_dict, 
+                    f=path + "/analysis/model_1/" + netG.model_name + f"_test_data.pth")
+        print(f"Test data MSE={MSE_temp:.4f} ", flush=True)
+    torch.distributed.barrier()
+
 
 ###START main pytorch multi-gpu tutorial###
 def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56, model_channels = 32, memory_profiling=False, model_id=21):
@@ -584,17 +664,8 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
         #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
                                         redshifts=[10,], IC_seeds=list(range(0,train_models)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
-        #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_128/", path_IC=path+"/outputs/IC_cubes_128/", 
-        #                                redshifts=[10,], IC_seeds=list(range(1000,1008)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
-        #train_dataset, train_dataset_norm, train_dataset_extrema = train_data_module.getFullDataset()
-
-        #train_dataloader = torch.utils.data.DataLoader( train_dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, 
-        #                                        sampler = DistributedSampler(train_dataset) if multi_gpu else None) #4
-        #train_data_norm = torch.utils.data.DataLoader( train_dataset_norm, batch_size=batch_size, shuffle=False if multi_gpu else True, 
-        #                                         sampler = DistributedSampler(train_dataset_norm) if multi_gpu else None) #4
         train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
                                                         sampler = DistributedSampler(train_data_module) if multi_gpu else None)
-        
         
         validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
         #validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
@@ -602,22 +673,12 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
                                                         sampler = DistributedSampler(validation_data_module) if multi_gpu else None)
         
-        if False: #72-80 extra validation
-            validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
-                                                redshifts=[10,], IC_seeds=list(range(56,72)), upscale=4, cut_factor=1, transform=False, norm_lr=True, device=device)
-            validation_data_module_small = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
-                                                        redshifts=[10,], IC_seeds=list(range(56,80)), upscale=4, cut_factor=2, transform=False, norm_lr=True, device=device)
-
+        test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+        #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
+                                        redshifts=[10,], IC_seeds=list(range(72,80)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
+        test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
+                                                        sampler = DistributedSampler(test_data_module) if multi_gpu else None)
         
-            validation_dataset, validation_dataset_norm, validation_dataset_extrema = validation_data_module.getFullDataset()
-            validation_dataset_small, validation_dataset_norm_small, validation_dataset_extrema_small = validation_data_module_small.getFullDataset()
-            validation_batch_size = 1
-            validation_batch_size_small = validation_dataset_small.tensors[0].shape[0]//validation_dataset.tensors[0].shape[0]
-            print("Validation batch size: ", validation_batch_size, validation_batch_size_small, flush=True)
-            validation_data_norm = torch.utils.data.DataLoader( validation_dataset_norm, batch_size=validation_batch_size, shuffle=False if multi_gpu else True, 
-                                                        sampler = DistributedSampler(validation_dataset_norm) if multi_gpu else None) #4
-            validation_data_norm_small = torch.utils.data.DataLoader( validation_dataset_norm_small, batch_size=validation_batch_size_small, shuffle=False if multi_gpu else True,
-                                                            sampler = DistributedSampler(validation_dataset_norm_small) if multi_gpu else None) #4
     
         try:
             fn = path + "/trained_models/model_1/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}_fac33test".format(netG.network_opt["model_channels"], 
@@ -658,47 +719,10 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                                                                                                                                               avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), 
                                                                                                                                               torch.min(torch.tensor(netG.loss)).item(), netG.optG.param_groups[0]['lr']), flush=True)
 
-            #if e<4 and multi_gpu: #memory snapshot
-            #    try:
-            #        torch.cuda.memory._dump_snapshot(f"memory_snapshot_{str(device)[-1]}.pickle")
-            #    except Exception as E:
-            #        print(f"Failed to capture memory snapshot {E}", flush=True)
-            #elif e==4 and multi_gpu:
-            #    torch.cuda.memory._record_memory_history(enabled=None)
                 
         loss_min = torch.min( torch.tensor(netG.loss_validation["loss"]) ).item()
 
         
-
-        if False:#avg_loss <= loss_min and e >= 4000:
-            if rank ==0:
-                print(f"[{device}] loss={avg_loss:.2f} smaller than saved loss={loss_min:.2f}, epoch {e}: validating...", flush=True)
-            loss_validation = validation_step_v2(netG=netG, validation_data_norm=validation_data_norm, validation_data_norm_small=validation_data_norm_small, device=device, multi_gpu=multi_gpu)
-            
-            loss_validation_min = torch.min( torch.tensor(netG.loss_validation["loss_validation"]) ).item()
-            if loss_validation < loss_validation_min:
-                if rank==0:
-                    print(f"[{device}] validation loss={loss_validation:.2f} smaller than validation minimum={loss_validation_min:.2f}", flush=True)
-                #netG.save_network(fn+".pth")
-                netG.loss_validation["loss"].append(avg_loss)
-                netG.loss_validation["loss_validation"].append(loss_validation)
-            else:
-                if rank==0:
-                    print(f"[{device}] Not saving... validation loss={loss_validation:.2f} larger than validation minimum={loss_validation_min:.2f}", flush=True)
-
-        if False:#len(netG.loss)>=150:
-            if (avg_loss == torch.min(torch.tensor(netG.loss)).item()) or len(netG.loss)%20==0:
-                netG.save_network( fn+".pth" )
-                #losses_validation, x_pred, k_and_dsq_and_idx = validation_step(netG=netG, validation_data=validation_data, validation_loss_type="dsq_voxel", device=device, multi_gpu=multi_gpu)
-                
-                if False: #(str(device)=="cuda:0") or (str(device)=="cpu"):
-                    print("losses_validation: {0}, loss_validation minimum: {1}".format(losses_validation.item(), torch.min(torch.tensor(netG.loss_validation)).item()), flush=True)
-                    
-                    if losses_validation.item() == torch.min(torch.tensor(netG.loss_validation)).item():       
-                        plot_checkpoint(validation_data, x_pred, k_and_dsq_and_idx=k_and_dsq_and_idx, epoch = e, path = fn+".png", device="cpu")
-                        netG.save_network( fn+".pth" )
-                    else:
-                        print("Not saving model. Validaiton did not improve", flush=True)
         if netG.network_opt["model_channels"] >=8:
             validation_check_epoch = 200#250
         else:
@@ -715,7 +739,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         print(f"[{device}] Validation took {validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} smaller than minimum={loss_validation_min**0.5:.3f}", flush=True)
                         #print(f"[{device}] tensors[0].shape: {tensors[0].shape}", flush=True)
                         path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_3/"
-                        print("Weights: ", netG.model.module.enc["64x64_conv"].weight[0,0,0], flush=True)
+                        #print("Weights: ", netG.model.module.enc["64x64_conv"].weight[0,0,0], flush=True)
                         plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)
                         plot_sigmas(**tensor_dict, netG=netG, path = path_plot,  quantiles=[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
                         print("Weights: ", netG.model.module.enc["64x64_conv"].weight[0,0,0], flush=True)
@@ -737,8 +761,13 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             #prof.step()
 
         #abort if last save was more than 10 validation tests ago
-        if not_saved >= 10:
-            print("No improvement in 10 validation tests. Aborting...", flush=True)
+        if True:#:not_saved >= 10:
+            if rank==0:
+                print("No improvement in 10 validation tests. Saving test data...", flush=True)
+            save_test_data(netG=netG, test_dataloader=test_dataloader, path=path, cut_factor=2, device=device)
+            if rank==0:
+                print("Test data saved. Now Aborting...", flush=True)
+            torch.distributed.barrier()
             break
 
     
@@ -765,13 +794,13 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        for channel in [4,]: #[32, 16, 8, 4]
-            for n_models in [56,]: #[56, 28, 1]
+        for channel in [32,]: #[32, 16, 8, 4]
+            for n_models in [1,]: #[56, 28, 1]
                 mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, False, 1), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
         try:
-            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=32, memory_profiling=False, model_id=2)#2*4)
+            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=32, memory_profiling=False, model_id=3)#2*4)
         except KeyboardInterrupt:
             print('Interrupted', flush=True)
             try:
