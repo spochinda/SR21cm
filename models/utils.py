@@ -34,7 +34,7 @@ class CustomDataset(torch.utils.data.Dataset):
             T21 = torch.from_numpy(loadmat(self.path_T21 + self.df[["T21"]].iloc[idx].values[0])["Tlin"]).unsqueeze(0).to(torch.float32).to(self.device)
             delta = torch.from_numpy(loadmat(self.path_IC + self.df[["delta"]].iloc[idx].values[0])["delta"]).unsqueeze(0).to(torch.float32).to(self.device)
             vbv = torch.from_numpy(loadmat(self.path_IC + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).to(torch.float32).to(self.device)
-            T21_lr = torch.nn.functional.interpolate(T21.unsqueeze(0), scale_factor=1/self.upscale, mode='trilinear')[0]
+            #T21_lr = torch.nn.functional.interpolate(T21.unsqueeze(0), scale_factor=1/self.upscale, mode='trilinear')[0]
             labels = torch.tensor(self.df[["labels (z)"]].iloc[idx].values[0]).to(torch.float32).to(self.device)
         else:
             #for old data
@@ -49,7 +49,7 @@ class CustomDataset(torch.utils.data.Dataset):
 
 
     
-        return T21, delta, vbv, T21_lr, labels
+        return T21, delta, vbv, labels#T21_lr, labels
     
     def getDataFrame(self, cut_factor=0):
         rows = []

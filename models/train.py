@@ -101,7 +101,7 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
     if multi_gpu:
         train_dataloader.sampler.set_epoch(epoch) #fix for ddp loaded checkpoint?
 
-    for i,(T21, delta, vbv, T21_lr, labels) in enumerate(train_dataloader):
+    for i,(T21, delta, vbv, labels) in enumerate(train_dataloader):
 
         if volume_reduction:
             if netG.network_opt["label_dim"] > 0:
@@ -113,7 +113,7 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
             T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
             delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
             vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-            T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+            T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
                         
             volume_frac = 1/(2**cut_factor)**3 #* torch.ones(size=(T21.shape[0],), device=device)
             multiple_redshifts = False
@@ -133,10 +133,10 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, split_ba
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
         
-        T21_lr, T21_lr_ups_mean, T21_lr_ups_std = normalize(T21_lr, mode="standard", factor=3.)#, factor=2.)
-        T21, T21_mean, T21_std = normalize(T21, mode="standard", factor=3., x_mean=T21_lr_mean, x_std=T21_lr_std)#, factor=2.) ####
-        delta, delta_mean, delta_std = normalize(delta, mode="standard", factor=3.)#, factor=2.)
-        vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard", factor=3.)#, factor=2.)
+        T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=3.)#, factor=2.)
+        T21, _,_ = normalize(T21, mode="standard", factor=3., x_mean=T21_lr_mean, x_std=T21_lr_std)#, factor=2.) ####
+        delta, _,_ = normalize(delta, mode="standard", factor=3.)#, factor=2.)
+        vbv, _,_ = normalize(vbv, mode="standard", factor=3.)#, factor=2.)
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
@@ -414,7 +414,7 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
     assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Only VPSDE sampler supported for validation_step_v2"
 
     netG.model.eval()
-    for i,(T21, delta, vbv, T21_lr, labels) in tqdm(enumerate(validation_dataloader), desc='validation loop', total=len(validation_dataloader), disable=False if str(device)=="cuda:0" else True):
+    for i,(T21, delta, vbv, labels) in tqdm(enumerate(validation_dataloader), desc='validation loop', total=len(validation_dataloader), disable=False if str(device)=="cuda:0" else True):
         # Rest of the code
         # alternating cut_factor 1 and 2:
         #cut_factor = torch.tensor([i%2 + 1], device=device) #randomness comes from validation_dataloader shuffle so it is not the same cubes cut each time
@@ -423,7 +423,7 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
         delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
         vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-        T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear') # get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
                     
         volume_frac = 1/(2**cut_factor)**3 #* torch.ones(size=(T21.shape[0],), device=device)
         multiple_redshifts = False
@@ -440,10 +440,10 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
         
-        T21_lr, T21_lr_ups_mean, T21_lr_ups_std = normalize(T21_lr, mode="standard", factor=3.)#, factor=2.)
-        T21, T21_mean, T21_std = normalize(T21, mode="standard", factor=3., x_mean=T21_lr_mean, x_std=T21_lr_std)#, factor=2.) #####
-        delta, delta_mean, delta_std = normalize(delta, mode="standard", factor=3.)#, factor=2.)
-        vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard", factor=3.)#, factor=2.)
+        T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=3.)#, factor=2.)
+        T21, _,_ = normalize(T21, mode="standard", factor=3., x_mean=T21_lr_mean, x_std=T21_lr_std)#, factor=2.) #####
+        delta, _,_ = normalize(delta, mode="standard", factor=3.)#, factor=2.)
+        vbv, _,_ = normalize(vbv, mode="standard", factor=3.)#, factor=2.)
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
     
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
@@ -532,13 +532,13 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, device="
 @torch.no_grad()
 def save_test_data(netG, test_dataloader, path, cut_factor=2, device="cpu"):
     rank = torch.distributed.get_rank()
-    for i,(T21, delta, vbv, T21_lr, labels) in tqdm(enumerate(test_dataloader), desc="Iterating over test data", total=len(test_dataloader), disable=False if rank==0 else True):
-        T21_lr, T21, delta, vbv = T21_lr.to(device), T21.to(device), delta.to(device), vbv.to(device)
+    for i,(T21, delta, vbv, labels) in tqdm(enumerate(test_dataloader), desc="Iterating over test data", total=len(test_dataloader), disable=False if rank==0 else True):
+        T21, delta, vbv = T21.to(device), delta.to(device), vbv.to(device)
 
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
         delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
         vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-        T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear') # get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
 
         T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
@@ -630,71 +630,71 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
     #optimizer and model
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
 
-    with torch.autograd.profiler.record_function("## setup load data ##") if False else contextlib.nullcontext():
-        #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
-        #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
-        #network = UNet
-        network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                        model_channels=model_channels, channel_mult=[2,2,2], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
-                        embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
-                        )
-        
-        #network = UNet
-        network = SongUNet
-        
-        #noise_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
-        #noise_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
-        #noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
-        noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
-        
-        #loss_fn = EDMLoss(P_mean=-1.2, P_std=1.2, sigma_data=0.5)
-        loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5)
-        
-        netG = GaussianDiffusion(
-                network=network,
-                network_opt=network_opt,
-                noise_schedule_opt=noise_schedule_opt,
-                loss_fn = loss_fn,
-                learning_rate=1e-4,
-                scheduler=False,
-                rank=rank,
-            )
-        
 
-        train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-        #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
-                                        redshifts=[10,], IC_seeds=list(range(0,train_models)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
-        train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
-                                                        sampler = DistributedSampler(train_data_module) if multi_gpu else None)
-        
-        validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-        #validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
-                                        redshifts=[10,], IC_seeds=list(range(train_models,72)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
-        validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
-                                                        sampler = DistributedSampler(validation_data_module) if multi_gpu else None)
-        
-        test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-        #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
-                                        redshifts=[10,], IC_seeds=list(range(72,80)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
-        test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
-                                                        sampler = DistributedSampler(test_data_module) if multi_gpu else None)
-        
+    #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
+    #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
+    #network = UNet
+    network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+                    model_channels=model_channels, channel_mult=[2,2,2], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                    embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
+                    )
     
-        try:
-            fn = path + "/trained_models/model_1/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}_fac33test".format(netG.network_opt["model_channels"], 
-                                                                                                   len(train_data_module.IC_seeds) * 100 // 80,
-                                                                                                   #netG.scheduler.gamma,
-                                                                                                   netG.noise_schedule_opt["schedule_type"], 
-                                                                                                   model_id)
-            netG.model_name = fn.split("/")[-1]
-            
-            raise Exception("Temporarily suspend loading")
-            netG.load_network(fn+".pth")
-            print("Loaded network at {0}".format(fn), flush=True)
-        except Exception as e:
-            print(e, flush=True)
-            print("Failed to load network at {0}. Starting from scratch.".format(fn+".pth"), flush=True)
+    #network = UNet
+    network = SongUNet
     
+    #noise_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
+    #noise_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
+    #noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
+    noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
+    
+    #loss_fn = EDMLoss(P_mean=-1.2, P_std=1.2, sigma_data=0.5)
+    loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5)
+    
+    netG = GaussianDiffusion(
+            network=network,
+            network_opt=network_opt,
+            noise_schedule_opt=noise_schedule_opt,
+            loss_fn = loss_fn,
+            learning_rate=1e-4,
+            scheduler=False,
+            rank=rank,
+        )
+    
+
+    train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
+                                    redshifts=[10,], IC_seeds=list(range(0,train_models)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
+    train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
+                                                    sampler = DistributedSampler(train_data_module) if multi_gpu else None)
+    
+    validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    #validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
+                                    redshifts=[10,], IC_seeds=list(range(train_models,72)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
+    validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
+                                                    sampler = DistributedSampler(validation_data_module) if multi_gpu else None)
+    
+    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
+                                    redshifts=[10,], IC_seeds=list(range(72,80)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
+    test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True,
+                                                    sampler = DistributedSampler(test_data_module) if multi_gpu else None)
+    
+
+    try:
+        fn = path + "/trained_models/model_1/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}_fac33test".format(netG.network_opt["model_channels"], 
+                                                                                                len(train_data_module.IC_seeds) * 100 // 80,
+                                                                                                #netG.scheduler.gamma,
+                                                                                                netG.noise_schedule_opt["schedule_type"], 
+                                                                                                model_id)
+        netG.model_name = fn.split("/")[-1]
+        
+        raise Exception("Temporarily suspend loading")
+        netG.load_network(fn+".pth")
+        print("Loaded network at {0}".format(fn), flush=True)
+    except Exception as e:
+        print(e, flush=True)
+        print("Failed to load network at {0}. Starting from scratch.".format(fn+".pth"), flush=True)
+
 
     if (str(device)=="cuda:0") or (str(device)=="cpu"):
         
@@ -761,7 +761,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             #prof.step()
 
         #abort if last save was more than 10 validation tests ago
-        if True:#:not_saved >= 10:
+        if not_saved >= 10:
             if rank==0:
                 print("No improvement in 10 validation tests. Saving test data...", flush=True)
             save_test_data(netG=netG, test_dataloader=test_dataloader, path=path, cut_factor=2, device=device)
