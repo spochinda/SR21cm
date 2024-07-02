@@ -293,6 +293,7 @@ class GaussianDiffusion(nn.Module):
                         )
 
     def load_network(self, path):
+        print("Loading model!", flush=True)
         loaded_state = torch.load(path, map_location=self.device)
         self.network_opt = loaded_state['network_opt']
         self.model = self.network(**self.network_opt)

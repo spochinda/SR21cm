@@ -761,9 +761,11 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             #prof.step()
 
         #abort if last save was more than 10 validation tests ago
-        if not_saved >= 10:
+        if not_saved >= 3:
             if rank==0:
-                print("No improvement in 10 validation tests. Saving test data...", flush=True)
+                print("No improvement in 3 validation tests. Saving test data...", flush=True)
+            netG.load_network(fn+".pth")
+            print("Weights: ", netG.model.module.enc["64x64_conv"].weight[0,0,0], flush=True)
             save_test_data(netG=netG, test_dataloader=test_dataloader, path=path, cut_factor=2, device=device)
             if rank==0:
                 print("Test data saved. Now Aborting...", flush=True)
@@ -795,8 +797,8 @@ if __name__ == "__main__":
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
         for channel in [32,]: #[32, 16, 8, 4]
-            for n_models in [1,]: #[56, 28, 1]
-                mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, False, 1), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+            for n_models in [56,]: #[56, 28, 1]
+                mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, False, 2), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
     else:
         print("Not using multi_gpu",flush=True)
         try:
