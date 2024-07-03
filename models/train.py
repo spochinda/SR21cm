@@ -470,8 +470,8 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, one_box_
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std)
             sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None) 
             
-            for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='validation loop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
-                if (i==j==0) and (str(device)=='cuda:0'):
+            for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='validation subloop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
+                if False:#(i==j==0) and (str(device)=='cuda:0'):
                     print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
                     plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_4/plot_input_validation.png")
 
@@ -489,18 +489,18 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, one_box_
 
                 if i==j==0:
                     T21_i = T21
-                    delta_i = delta
-                    vbv_i = vbv
-                    T21_lr_i = T21_lr
+                    #delta_i = delta
+                    #vbv_i = vbv
+                    #T21_lr_i = T21_lr
                     T21_pred_i = T21_pred_j
                 else:
                     T21_i = torch.cat([T21_i, T21], dim=0)
-                    delta_i = torch.cat([delta_i, delta], dim=0)
-                    vbv_i = torch.cat([vbv_i, vbv], dim=0)
-                    T21_lr_i = torch.cat([T21_lr_i, T21_lr], dim=0)
+                    #delta_i = torch.cat([delta_i, delta], dim=0)
+                    #vbv_i = torch.cat([vbv_i, vbv], dim=0)
+                    #T21_lr_i = torch.cat([T21_lr_i, T21_lr], dim=0)
                     T21_pred_i = torch.cat([T21_pred_i, T21_pred_j], dim=0)
-                #if j == 0:
-                #    break #only do one subbatch for now
+                if j == 8:
+                    break #only do one subbatch for now
         
         else:
             T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
@@ -528,17 +528,17 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, one_box_
         torch.distributed.all_gather(tensor_list=T21_tensor_list, tensor=T21_i)
         T21 = torch.cat(T21_tensor_list, dim=0)
 
-        T21_lr_tensor_list = [torch.zeros_like(T21_lr_i) for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensor_list=T21_lr_tensor_list, tensor=T21_lr_i)
-        T21_lr = torch.cat(T21_lr_tensor_list, dim=0)
+        #T21_lr_tensor_list = [torch.zeros_like(T21_lr_i) for _ in range(torch.distributed.get_world_size())]
+        #torch.distributed.all_gather(tensor_list=T21_lr_tensor_list, tensor=T21_lr_i)
+        #T21_lr = torch.cat(T21_lr_tensor_list, dim=0)
 
-        delta_tensor_list = [torch.zeros_like(delta_i) for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensor_list=delta_tensor_list, tensor=delta_i)
-        delta = torch.cat(delta_tensor_list, dim=0)
+        #delta_tensor_list = [torch.zeros_like(delta_i) for _ in range(torch.distributed.get_world_size())]
+        #torch.distributed.all_gather(tensor_list=delta_tensor_list, tensor=delta_i)
+        #delta = torch.cat(delta_tensor_list, dim=0)
 
-        vbv_tensor_list = [torch.zeros_like(vbv_i) for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensor_list=vbv_tensor_list, tensor=vbv_i)
-        vbv = torch.cat(vbv_tensor_list, dim=0)
+        #vbv_tensor_list = [torch.zeros_like(vbv_i) for _ in range(torch.distributed.get_world_size())]
+        #torch.distributed.all_gather(tensor_list=vbv_tensor_list, tensor=vbv_i)
+        #vbv = torch.cat(vbv_tensor_list, dim=0)
 
         T21_pred_tensor_list = [torch.zeros_like(T21_pred_i) for _ in range(torch.distributed.get_world_size())]
         torch.distributed.all_gather(tensor_list=T21_pred_tensor_list, tensor=T21_pred_i)
@@ -547,7 +547,8 @@ def validation_step_v2(netG, validation_dataloader, split_batch = True, one_box_
     
     MSE = torch.mean(MSE).item()
 
-    return MSE, dict(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, T21_pred=T21_pred)
+    return MSE, dict(T21=T21, #delta=delta, vbv=vbv, T21_lr=T21_lr, 
+                     T21_pred=T21_pred)
 
 @torch.no_grad()
 def save_test_data(netG, test_dataloader, path, cut_factor=2, device="cpu"):
@@ -576,7 +577,7 @@ def save_test_data(netG, test_dataloader, path, cut_factor=2, device="cpu"):
         sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None) #(2**(cut_factor-1))**3
 
         for j,(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std) in tqdm(enumerate(sub_dataloader), desc="Iterating split batch", total=len(sub_dataloader), disable=False if rank==0 else True):
-            if (i==j==0) and (str(device)=='cuda:0'):
+            if False:#(i==j==0) and (str(device)=='cuda:0'):
                 print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
                 plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_4/plot_input_save_test.png")
             with netG.ema.average_parameters():
@@ -592,16 +593,16 @@ def save_test_data(netG, test_dataloader, path, cut_factor=2, device="cpu"):
                 T21_pred_i = T21_pred_j
                 T21_i = T21
 
-                T21_lr_orig_all = T21_lr_orig
-                delta_all = delta
-                vbv_all = vbv
+                #T21_lr_orig_all = T21_lr_orig
+                #delta_all = delta
+                #vbv_all = vbv
             else:
                 T21_pred_i = torch.cat([T21_pred_i, T21_pred_j], dim=0)
                 T21_i = torch.cat([T21_i, T21_j], dim=0)
 
-                T21_lr_orig_all = torch.cat([T21_lr_orig_all, T21_lr_orig], dim=0)
-                delta_all = torch.cat([delta_all, delta], dim=0)
-                vbv_all = torch.cat([vbv_all, vbv], dim=0)
+                #T21_lr_orig_all = torch.cat([T21_lr_orig_all, T21_lr_orig], dim=0)
+                #delta_all = torch.cat([delta_all, delta], dim=0)
+                #vbv_all = torch.cat([vbv_all, vbv], dim=0)
 
     T21_pred_tensor_list = [torch.zeros_like(T21_pred_i) for _ in range(torch.distributed.get_world_size())]
     torch.distributed.all_gather(tensor_list=T21_pred_tensor_list, tensor=T21_pred_i)
@@ -611,29 +612,30 @@ def save_test_data(netG, test_dataloader, path, cut_factor=2, device="cpu"):
     torch.distributed.all_gather(tensor_list=T21_tensor_list, tensor=T21_i)
     T21 = torch.cat(T21_tensor_list, dim=0)
 
-    T21_lr_orig_all_tensor_list = [torch.zeros_like(T21_lr_orig_all) for _ in range(torch.distributed.get_world_size())]
-    torch.distributed.all_gather(tensor_list=T21_lr_orig_all_tensor_list, tensor=T21_lr_orig_all)
-    T21_lr_orig_all = torch.cat(T21_lr_orig_all_tensor_list, dim=0)
+    #T21_lr_orig_all_tensor_list = [torch.zeros_like(T21_lr_orig_all) for _ in range(torch.distributed.get_world_size())]
+    #torch.distributed.all_gather(tensor_list=T21_lr_orig_all_tensor_list, tensor=T21_lr_orig_all)
+    #T21_lr_orig_all = torch.cat(T21_lr_orig_all_tensor_list, dim=0)
 
-    delta_all_tensor_list = [torch.zeros_like(delta_all) for _ in range(torch.distributed.get_world_size())]
-    torch.distributed.all_gather(tensor_list=delta_all_tensor_list, tensor=delta_all)
-    delta_all = torch.cat(delta_all_tensor_list, dim=0)
+    #delta_all_tensor_list = [torch.zeros_like(delta_all) for _ in range(torch.distributed.get_world_size())]
+    #torch.distributed.all_gather(tensor_list=delta_all_tensor_list, tensor=delta_all)
+    #delta_all = torch.cat(delta_all_tensor_list, dim=0)
 
-    vbv_all_tensor_list = [torch.zeros_like(vbv_all) for _ in range(torch.distributed.get_world_size())]
-    torch.distributed.all_gather(tensor_list=vbv_all_tensor_list, tensor=vbv_all)
-    vbv_all = torch.cat(vbv_all_tensor_list, dim=0)
+    #vbv_all_tensor_list = [torch.zeros_like(vbv_all) for _ in range(torch.distributed.get_world_size())]
+    #torch.distributed.all_gather(tensor_list=vbv_all_tensor_list, tensor=vbv_all)
+    #vbv_all = torch.cat(vbv_all_tensor_list, dim=0)
     
 
     MSE_temp = torch.mean(torch.square(T21_pred - T21)).item()
     if rank==0:
         print(f"Test data RMSE={MSE_temp**0.5:.4f} ", flush=True)
-        save_dict = dict(T21 = T21, T21_pred = T21_pred, delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all)
+        save_dict = dict(T21 = T21, T21_pred = T21_pred, )#delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all)
         torch.save(obj=save_dict, 
                     f=path + "/analysis/model_2/" + netG.model_name + f"_test_data.pth")
         
     torch.distributed.barrier()
 
-    return MSE_temp, dict(T21=T21, delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all, T21_pred=T21_pred)
+    return MSE_temp, dict(T21=T21, #delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all, 
+                          T21_pred=T21_pred)
 
 
 ###START main pytorch multi-gpu tutorial###
