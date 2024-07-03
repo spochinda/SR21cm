@@ -36,6 +36,8 @@ class CustomDataset(torch.utils.data.Dataset):
             vbv = torch.from_numpy(loadmat(self.path_IC + self.df[["vbv"]].iloc[idx].values[0])["vbv"]).unsqueeze(0).to(torch.float32).to(self.device)
             #T21_lr = torch.nn.functional.interpolate(T21.unsqueeze(0), scale_factor=1/self.upscale, mode='trilinear')[0]
             labels = torch.tensor(self.df[["labels (z)"]].iloc[idx].values[0]).to(torch.float32).to(self.device)
+
+            #print(f"[{str(T21.device)}]: Model id {idx}", flush=True)
         else:
             #for old data
             #use getFullDataset first to set self.dataset
