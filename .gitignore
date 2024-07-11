@@ -4,6 +4,7 @@ outputs/
 analysis/*
 !analysis/sampling_stepsize.py
 !analysis/sampling_models_rmse.py
+!analysis/sampling_scales.py
 models/__pycache__
 plots/*
 trained_models/*

@@ -285,7 +285,7 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
         for i in range(kbins):
             cond = ((k >= k_bin_edges[i]) & (k < k_bin_edges[i+1]))
             k_vals[i] = (k_bin_edges[i+1] + k_bin_edges[i])/2
-            P_k[i] = (Vpix/Vbox) * Vpix * np.average(np.absolute(data_k[cond]))**2
+            P_k[i] = (Vpix/Vbox) * Vpix * np.average(np.absolute(data_k[cond])**2)
         P_k = P_k*k_vals**3/(2*np.pi**2) if dsq else P_k
         return k_vals, P_k
     elif method == "torch":
@@ -305,8 +305,8 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
         for i in range(kbins):
             cond_torch = conditions[i]
             k_vals_torch[i] = (k_bin_edges_torch[i+1] + k_bin_edges_torch[i])/2
-            means = torch.mean(torch.abs(data_k_torch[...,cond_torch]),dim=2, keepdim=False)
-            P_k_torch[:,:,i] = (Vpix/Vbox) * Vpix * means**2
+            means = torch.mean(torch.abs(data_k_torch[...,cond_torch])**2,dim=2, keepdim=False)
+            P_k_torch[:,:,i] = (Vpix/Vbox) * Vpix * means
         P_k_torch = P_k_torch*k_vals_torch**3/(2*np.pi**2) if dsq else P_k_torch
         return k_vals_torch, P_k_torch
     else:
