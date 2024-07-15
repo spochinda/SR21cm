@@ -64,9 +64,7 @@ class Conv2d(torch.nn.Module):
         self.weight = torch.nn.Parameter(weight_init([out_channels, in_channels, kernel, kernel], **init_kwargs) * init_weight) if kernel else None
         self.bias = torch.nn.Parameter(weight_init([out_channels], **init_kwargs) * init_bias) if kernel and bias else None
         f = torch.as_tensor(resample_filter, dtype=torch.float32)
-        print("f: ", f)
         f = f.ger(f).unsqueeze(0).unsqueeze(1) / f.sum().square()
-        print("f: ", f)
         self.register_buffer('resample_filter', f if up or down else None)
 
     def forward(self, x):
@@ -75,7 +73,6 @@ class Conv2d(torch.nn.Module):
         f = self.resample_filter.to(x.dtype) if self.resample_filter is not None else None
         w_pad = w.shape[-1] // 2 if w is not None else 0
         f_pad = (f.shape[-1] - 1) // 2 if f is not None else 0
-        print("pads: ", w_pad, f_pad)
         if self.fused_resample and self.up and w is not None:
             x = torch.nn.functional.conv_transpose2d(x, f.mul(4).tile([self.in_channels, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
             x = torch.nn.functional.conv2d(x, w, padding=max(w_pad - f_pad, 0))
@@ -228,6 +225,8 @@ class UNetBlock(torch.nn.Module):
         x = x * self.skip_scale
 
         if self.num_heads:
+            if torch.cuda.current_device() == 0:
+                print(f"Inside attention with num_heads={self.num_heads}...", flush=True)
             q, k, v = self.qkv(self.norm2(x)).reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1).unbind(2)
             w = AttentionOp.apply(q, k)
             a = torch.einsum('nqk,nck->ncq', w, v)
@@ -336,6 +335,8 @@ class SongUNet(torch.nn.Module):
                 cin = cout
                 cout = model_channels * mult
                 attn = (res in attn_resolutions)
+                if attn:
+                    print(f"Adding encoder block {idx} at resolution {res} with attention={attn}...", flush=True)
                 self.enc[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=attn, **block_kwargs)
         skips = [block.out_channels for name, block in self.enc.items() if 'aux' not in name]
 
@@ -344,7 +345,7 @@ class SongUNet(torch.nn.Module):
         for level, mult in reversed(list(enumerate(channel_mult))):
             res = img_resolution >> level
             if level == len(channel_mult) - 1:
-                self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, attention=True, **block_kwargs)
+                self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, attention=attn, **block_kwargs) ###bug here attention was set to true instead of attn
                 self.dec[f'{res}x{res}_in1'] = UNetBlock(in_channels=cout, out_channels=cout, **block_kwargs)
             else:
                 self.dec[f'{res}x{res}_up'] = UNetBlock(in_channels=cout, out_channels=cout, up=True, **block_kwargs)
@@ -352,6 +353,8 @@ class SongUNet(torch.nn.Module):
                 cin = cout + skips.pop()
                 cout = model_channels * mult
                 attn = (idx == num_blocks and res in attn_resolutions)
+                if attn:
+                    print(f"Adding decoder block {idx} at resolution {res} with attention={attn}...", flush=True)
                 self.dec[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=attn, **block_kwargs)
             if decoder_type == 'skip' or level == 0:
                 if decoder_type == 'skip' and level < len(channel_mult) - 1:

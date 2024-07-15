@@ -26,7 +26,7 @@ def ddp_setup(rank: int, world_size: int):
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
 
-def sample_scales(rank, world_size, cut_factor=2, sub_batch=1, num_steps=100, model_path=""):
+def sample_scales(rank, world_size, cut_factor=2, split_batch = True, sub_batch=1, num_steps=100, model_path=""):
     multi_gpu = world_size > 1
 
     if multi_gpu:
@@ -40,7 +40,7 @@ def sample_scales(rank, world_size, cut_factor=2, sub_batch=1, num_steps=100, mo
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
 
 
-    channels = int(model_path.split("channels_")[1].split("_")[0])
+    channels = 16#int(model_path.split("channels_")[1].split("_")[0])
 
     
     network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
@@ -69,18 +69,18 @@ def sample_scales(rank, world_size, cut_factor=2, sub_batch=1, num_steps=100, mo
         )
     
     netG.model_name = model_path.split("/")[-1].split(".pth")[0]
-    netG.load_network(model_path)
+    #netG.load_network(model_path)
 
 
 
 
-    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-    #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
+    #test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
                                     redshifts=[10,], IC_seeds=list(range(72,80)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
     test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=1, shuffle=False if multi_gpu else True,
                                                     sampler = DistributedSampler(test_data_module) if multi_gpu else None)
     
-    loss_validation, tensor_dict = validation_step_v2(netG=netG, validation_dataloader=test_dataloader, cut_factor=cut_factor, norm_factor=1., augment=False, split_batch = True, sub_batch = sub_batch, one_box_validation=False, num_steps=num_steps, device=device, multi_gpu=multi_gpu)
+    loss_validation, tensor_dict = validation_step_v2(netG=netG, validation_dataloader=test_dataloader, cut_factor=cut_factor, norm_factor=1., augment=False, split_batch = split_batch, sub_batch = sub_batch, one_box_validation=False, num_steps=num_steps, device=device, multi_gpu=multi_gpu)
     
     if rank==0:
         print(f"RMSE={loss_validation**0.5:.3f}, cut_factor={cut_factor}, num_steps={num_steps}", flush=True)
@@ -105,20 +105,22 @@ if __name__ == "__main__":
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
     model = "DDPMpp_standard_channels_32_tts_70_VPSDE_3_normfactor1.pth"
 
-    cut_factors = [2,1,0]
-    sub_batches = [4,1,1]
+    cut_factors = [0,1]
+    sub_batches = [1,1]
+    split_batches = [False, True]
 
     if multi_gpu:
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
 
-        for cut_factor,sub_batch in zip(cut_factors,sub_batches):
+        for cut_factor,split_batch,sub_batch in zip(cut_factors,split_batches, sub_batches):
             sample_time = time.time()
             mp.spawn(
                 sample_scales, 
                 args=(world_size,
                     cut_factor, #1
+                    split_batch, #True
                     sub_batch, #1
                     100, #steps
                     path+f"/trained_models/model_3/{model}",
@@ -131,4 +133,4 @@ if __name__ == "__main__":
         print("Not using multi_gpu",flush=True)
 
         for cut_factor,sub_batch in zip(cut_factors,sub_batches):
-            sample_scales(rank=0, world_size=0, cut_factor=cut_factor, sub_batch=sub_batch, model_path=path+f"/trained_models/model_3/{model}",)
+            sample_scales(rank=0, world_size=0, cut_factor=cut_factor, split_batch=True, sub_batch=sub_batch, model_path=path+f"/trained_models/model_3/{model}",)

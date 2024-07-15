@@ -54,13 +54,16 @@ class Sampler():
             #noise_labels = batch_time_step.flatten() #noise_labels.flatten()
             X = torch.cat([x, *conditionals, x_lr], dim = 1)
 
-            try:
+            #try:
+            if str(x.device) == "cuda:0":
+                print(torch.cuda.memory_summary())
+            with torch.no_grad():
                 score = netG.model(x=X, noise_labels=batch_time_step.flatten(), class_labels=class_labels, augment_labels=None) #999 from wrapper get_score_fn
-                std = netG.SDE.marginal_prob(x=torch.zeros_like(x), t=batch_time_step)[1] #from wrapper get_score_fn
-                score = -score / std #from wrapper get_score_fn
-            except Exception as e:
-                print(e)
-                score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals) #old UNet model (maybe time is sigma from marginalprob?)    
+            std = netG.SDE.marginal_prob(x=torch.zeros_like(x), t=batch_time_step)[1] #from wrapper get_score_fn
+            score = -score / std #from wrapper get_score_fn
+            #except Exception as e:
+            #    print(e)
+            #    score = netG.model(x=x, time=batch_time_step, x_lr=x_lr, conditionals=conditionals) #old UNet model (maybe time is sigma from marginalprob?)    
             
             
             f, g = netG.SDE.rsde(x=x, t=batch_time_step, score=score, probability_flow=False)
