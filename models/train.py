@@ -90,7 +90,7 @@ def trace_handler(prof: torch.profiler.profile):
 
 
 
-def train_step(netG, epoch, train_dataloader, volume_reduction = False, norm_factor = 3., split_batch=True, one_box_per_epoch = True, device="cpu", multi_gpu = False,):
+def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., split_batch=True, one_box_per_epoch = True, device="cpu", multi_gpu = False,):
     """
     Train the model
     """
@@ -102,33 +102,13 @@ def train_step(netG, epoch, train_dataloader, volume_reduction = False, norm_fac
         train_dataloader.sampler.set_epoch(epoch) #fix for ddp loaded checkpoint?
 
     for i,(T21, delta, vbv, labels) in enumerate(train_dataloader):
+        labels = None #set labels to None for now (not used)
 
-        if volume_reduction:
-            if netG.network_opt["label_dim"] > 0:
-                cut_factor = torch.randint(low=1, high=3, size=(1,), device=device)#.item()
-            else:
-                cut_factor = torch.randint(low=2, high=3, size=(1,), device=device)#always cut 2
-                #cut_factor = torch.randint(low=1, high=2, size=(1,), device=device)#always cut 1
-
-            T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
-            delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
-            vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-            T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
-                        
-            volume_frac = 1/(2**cut_factor)**3 #* torch.ones(size=(T21.shape[0],), device=device)
-            multiple_redshifts = False
-            labels = volume_frac #torch.tensor([volume_frac,], device=device) #torch.cat([labels, volume_frac], dim=1) if multiple_redshifts else
-
-            
-
-        if netG.network_opt["label_dim"] > 0:
-            labels = labels
-        else:
-            labels = None
-        
-        #with torch.no_grad():
-        #T21_lr_min = torch.amin(T21_lr, dim=(1,2,3,4), keepdim=True)
-        #T21_lr_max = torch.amax(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
+        delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
+        vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
+        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+                    
         T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
@@ -459,7 +439,7 @@ def plot_hist(T21_1, T21_2, path="", label="true diff", **kwargs):
     plt.close()
 
 @torch.no_grad()
-def validation_step_v2(netG, validation_dataloader, cut_factor=2, norm_factor = 1., augment=True, split_batch = True, sub_batch = 4, one_box_validation = True, num_steps=100, device="cpu", multi_gpu=False):
+def validation_step_v2(netG, validation_dataloader, cut_factor=1, norm_factor = 1., augment=True, split_batch = True, sub_batch = 4, one_box_validation = True, num_steps=100, device="cpu", multi_gpu=False):
     assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Only VPSDE sampler supported for validation_step_v2"
 
     #netG.model.eval() #already inside Euler_Maruyama_sampler
@@ -682,8 +662,8 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
     #network = UNet
-    network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                    model_channels=model_channels, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[4,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+                    model_channels=model_channels, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
     #img_resolution=64, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[4,], mid_attn=True, largest model to pass through 512 on 80GB and 40GB
@@ -730,7 +710,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
     
 
     try:
-        fn = path + "/trained_models/mode_4/DDPMpp_standard_channels_{0}_mult_{1}_tts_{2}_{3}_{4}_normfactor{5}".format(
+        fn = path + "/trained_models/model_4/DDPMpp_standard_channels_{0}_mult_{1}_tts_{2}_{3}_{4}_normfactor{5}".format(
             netG.network_opt["model_channels"],
             "".join(f"{m}-" for i,m in enumerate(network_opt["channel_mult"]))[:-1], 
             len(train_data_module.IC_seeds) * 100 // 80,
@@ -783,7 +763,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             start_time = time.time()
         
         
-        avg_loss = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, volume_reduction=True, norm_factor=norm_factor, split_batch=True, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
+        avg_loss = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=1, norm_factor=norm_factor, split_batch=True, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
 
 
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
@@ -806,14 +786,14 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         elif model_channels==8:
             validation_check_epoch = 300
         elif model_channels==4:
-            validation_check_epoch = 400
+            validation_check_epoch = 200
         
         
         if len(netG.loss)>=validation_check_epoch:
             if len(netG.loss)%20==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
                 
                 start_time_validation = time.time()
-                loss_validation, tensor_dict_validation = validation_step_v2(netG=netG, validation_dataloader=validation_dataloader, cut_factor=2, norm_factor=norm_factor, augment=True, split_batch = True, sub_batch = 4, one_box_validation=True, num_steps=100, device=device, multi_gpu=multi_gpu)
+                loss_validation, tensor_dict_validation = validation_step_v2(netG=netG, validation_dataloader=validation_dataloader, cut_factor=1, norm_factor=norm_factor, augment=True, split_batch = True, sub_batch = 4, one_box_validation=True, num_steps=100, device=device, multi_gpu=multi_gpu)
                 validation_time = time.time()-start_time_validation
                 
                 loss_validation_min = torch.min(torch.tensor(netG.loss_validation["loss_validation"])).item()
@@ -828,7 +808,10 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         #plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)
                         
                         print(f"[{device}] Validation took {validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} smaller than minimum={loss_validation_min**0.5:.3f}", flush=True)
-                        print("Weights: ", netG.model.module.enc["64x64_conv"].weight[0,0,0], flush=True)
+                        try:
+                            print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
+                        except:
+                            pass
                     netG.save_network(fn+".pth")
                     saved_network_str = netG.model.module.state_dict().__str__()
                     
@@ -848,7 +831,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             netG.load_network(fn+".pth")
             
             #MSE_save, tensor_dict = save_test_data(netG=netG, test_dataloader=validation_dataloader, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen", cut_factor=2, device=device)
-            loss_validation, tensor_dict = validation_step_v2(netG=netG, validation_dataloader=test_dataloader, cut_factor=2, norm_factor=norm_factor, augment=False, split_batch = True, sub_batch = 4, one_box_validation=False, num_steps=100, device=device, multi_gpu=multi_gpu)
+            loss_validation, tensor_dict = validation_step_v2(netG=netG, validation_dataloader=test_dataloader, cut_factor=1, norm_factor=norm_factor, augment=False, split_batch = True, sub_batch = 4, one_box_validation=False, num_steps=100, device=device, multi_gpu=multi_gpu)
             path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_6/"
             plot_sigmas(**tensor_dict, netG=netG, path = path_plot + "save_test_data_",  quantiles=[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
             
