@@ -683,7 +683,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
     #network = UNet
     network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                    model_channels=model_channels, channel_mult=[1,2,4,8], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                    model_channels=model_channels, channel_mult=[1,2,2,4,4], num_blocks = 2, attn_resolutions=[], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
     
@@ -747,13 +747,22 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
     if (str(device)=="cuda:0") or (str(device)=="cpu"):
-        
-        print(f"[{device}] (Mini)Batchsize: {train_dataloader.batch_size} | Steps (batches): {len(train_dataloader)}", flush=True)
-    
+        print(netG.model, flush=True)
+
     if (str(device)=="cuda:0") and memory_profiling:
         torch.cuda.memory._record_memory_history()
         #prof.step()
     
+    #test 512 boxes forward pass through model to see if we get OOM
+    print(f"[{str(device)}] Testing forward pass through model...", flush=True)
+    for box_len in [512,]:
+        X = torch.randn(1,4,*(3*[box_len,])).to(device)
+        b,(*d)  = X[:,:1].shape
+        batch_time_step = torch.tensor(b*[0.9]).view(b,*[1]*len(d))
+        score = netG.model(x=X, noise_labels=batch_time_step.flatten(), class_labels=None, augment_labels=None) #999 from wrapper get_score_fn
+        print(f"[{str(device)}] Passed {box_len}", flush=True)
+    print(f"[{str(device)}] Forward pass through model successful", flush=True)
+
     not_saved = 0
     for e in range(total_epochs):        
         
