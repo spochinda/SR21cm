@@ -55,8 +55,8 @@ class Sampler():
             X = torch.cat([x, *conditionals, x_lr], dim = 1)
 
             #try:
-            if str(x.device) == "cuda:0":
-                print(torch.cuda.memory_summary())
+            #if str(x.device) == "cuda:0":
+            #    print(torch.cuda.memory_summary())
             with torch.no_grad():
                 score = netG.model(x=X, noise_labels=batch_time_step.flatten(), class_labels=class_labels, augment_labels=None) #999 from wrapper get_score_fn
             std = netG.SDE.marginal_prob(x=torch.zeros_like(x), t=batch_time_step)[1] #from wrapper get_score_fn

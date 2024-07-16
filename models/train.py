@@ -37,12 +37,12 @@ import torch
 import torch.distributed
 import torch.utils
 
-from .utils import *
-from .diffusion import *
-from .model import *
-from .model_edm import SongUNet
-from .loss import *
-from .sde_lib import VPSDE
+from utils import *
+from diffusion import *
+from model import *
+from model_edm import SongUNet
+from loss import *
+from sde_lib import VPSDE
 
 
 import matplotlib.pyplot as plt
@@ -490,7 +490,7 @@ def validation_step_v2(netG, validation_dataloader, cut_factor=2, norm_factor = 
             for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='validation subloop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
                 if False:#(i==j==0) and (str(device)=='cuda:0'):
                     print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
-                    plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_5/plot_input_validation.png")
+                    plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_6/plot_input_validation.png")
 
                 #with netG.ema.average_parameters():
                 T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=num_steps, eps=1e-3, clip_denoised=False, verbose=False)
@@ -521,8 +521,8 @@ def validation_step_v2(netG, validation_dataloader, cut_factor=2, norm_factor = 
         
         else:
             T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=num_steps, eps=1e-3, clip_denoised=False, verbose=False)
-            T21_pred_i = invert_normalization(T21_pred_i[:,-1:], mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std, factor=norm_factor,)#, factor=2.)
-            T21_i = invert_normalization(T21, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std, factor=norm_factor)
+            T21_pred_i = invert_normalization(T21_pred_i[:,-1:], mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
+            T21_i = invert_normalization(T21, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)
             #delta_i = delta
             #vbv_i = vbv
             #T21_lr_i = T21_lr
@@ -599,7 +599,7 @@ def save_test_data(netG, test_dataloader, norm_factor = 3., path="", cut_factor=
         for j,(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std) in tqdm(enumerate(sub_dataloader), desc="Iterating split batch", total=len(sub_dataloader), disable=False if rank==0 else True):
             if False:#(i==j==0) and (str(device)=='cuda:0'):
                 print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
-                plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_5/plot_input_save_test.png")
+                plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_6/plot_input_save_test.png")
             with netG.ema.average_parameters():
                 T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
 
@@ -650,7 +650,7 @@ def save_test_data(netG, test_dataloader, norm_factor = 3., path="", cut_factor=
         print(f"Test data RMSE={MSE_temp**0.5:.4f} ", flush=True)
         save_dict = dict(T21 = T21, T21_pred = T21_pred, )#delta=delta_all, vbv=vbv_all, T21_lr=T21_lr_orig_all)
         torch.save(obj=save_dict, 
-                    f=path + "/analysis/model_3/" + netG.model_name + f"_test_data.pth")
+                    f=path + "/analysis/model_4/" + netG.model_name + f"_test_data.pth")
         
     torch.distributed.barrier()
 
@@ -683,7 +683,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
     #network = UNet
     network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                    model_channels=model_channels, channel_mult=[2,2,2], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                    model_channels=model_channels, channel_mult=[1,2,4,8], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
     
@@ -729,14 +729,16 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
     
 
     try:
-        fn = path + "/trained_models/model_3/DDPMpp_standard_channels_{0}_tts_{1}_{2}_{3}_normfactor{4}".format(netG.network_opt["model_channels"], 
-                                                                                                len(train_data_module.IC_seeds) * 100 // 80,
-                                                                                                #netG.scheduler.gamma,
-                                                                                                netG.noise_schedule_opt["schedule_type"], 
-                                                                                                model_id, int(norm_factor))
+        fn = path + "/trained_models/model_4/DDPMpp_standard_channels_{0}_mult_{1}_tts_{2}_{3}_{4}_normfactor{5}".format(
+            netG.network_opt["model_channels"],
+            "".join(f"{m}-" for i,m in enumerate(network_opt["channel_mult"]))[:-1], 
+            len(train_data_module.IC_seeds) * 100 // 80,
+            netG.noise_schedule_opt["schedule_type"], 
+            model_id, int(norm_factor))
+        
         netG.model_name = fn.split("/")[-1]
         
-        raise Exception("Temporarily suspend loading")
+        #raise Exception("Temporarily suspend loading")
         netG.load_network(fn+".pth")
         print("Loaded network at {0}".format(fn), flush=True)
     except Exception as e:
@@ -796,9 +798,9 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                 if loss_validation < loss_validation_min:
                     if rank==0:
                         torch.save(obj=tensor_dict_validation,
-                                   f=os.getcwd().split("/21cmGen")[0] + "/21cmGen/analysis/model_3/validation_tensors.pth")
+                                   f=os.getcwd().split("/21cmGen")[0] + "/21cmGen/analysis/model_4/validation_tensors.pth")
                         
-                        path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_5/"
+                        path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_6/"
                         plot_hist(T21_1=tensor_dict_validation["T21"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+f"hist_true_validation_during_{netG.model_name}.png", label="mean true-validation during")
                         plot_sigmas(**tensor_dict_validation, netG=netG, path = path_plot,  quantiles=[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
                         #plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)
@@ -825,15 +827,15 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             
             #MSE_save, tensor_dict = save_test_data(netG=netG, test_dataloader=validation_dataloader, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen", cut_factor=2, device=device)
             loss_validation, tensor_dict = validation_step_v2(netG=netG, validation_dataloader=test_dataloader, cut_factor=2, norm_factor=norm_factor, augment=False, split_batch = True, sub_batch = 4, one_box_validation=False, num_steps=100, device=device, multi_gpu=multi_gpu)
-            path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_5/"
+            path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_6/"
             plot_sigmas(**tensor_dict, netG=netG, path = path_plot + "save_test_data_",  quantiles=[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
             
             
             torch.save(obj=tensor_dict,
-                       f=os.getcwd().split("/21cmGen")[0] + f"/21cmGen/analysis/model_3/save_data_tensors_{netG.model_name}.pth")
+                       f=os.getcwd().split("/21cmGen")[0] + f"/21cmGen/analysis/model_4/save_data_tensors_{netG.model_name}.pth")
             plot_hist(T21_1=tensor_dict["T21"], T21_2=tensor_dict["T21_pred"], path=path_plot+f"hist_true_validation_after_{netG.model_name}.png", label="mean true-validation after")
 
-            #tensor_dict_validation = torch.load(f=os.getcwd().split("/21cmGen")[0] + "/21cmGen/analysis/model_3/validation_tensors.pth", map_location=device)
+            #tensor_dict_validation = torch.load(f=os.getcwd().split("/21cmGen")[0] + "/21cmGen/analysis/model_4/validation_tensors.pth", map_location=device)
             #plot_hist(T21_1=tensor_dict["T21_pred"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+"hist_validation_after_validation_during.png", label="mean validation_after - during") #cant do this when I change to test_dataloader
             
             if rank==0:
@@ -874,9 +876,9 @@ if __name__ == "__main__":
         #        else:
         #            mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, 1., False, 3), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
 
-        for channel,n_models in zip([4,32], [28,1]): #added
+        for channel,n_models in zip([4,4,4], [56,28,1]): #added
             training_time = time.time()
-            mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, 1., False, 3), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+            mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, 1., False, 1), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
             print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
     else:
         print("Not using multi_gpu",flush=True)

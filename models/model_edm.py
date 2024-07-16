@@ -225,8 +225,7 @@ class UNetBlock(torch.nn.Module):
         x = x * self.skip_scale
 
         if self.num_heads:
-            if torch.cuda.current_device() == 0:
-                print(f"Inside attention with num_heads={self.num_heads}...", flush=True)
+            #print(f"Inside attention with num_heads={self.num_heads} and x.shape={x.shape}...", flush=True)
             q, k, v = self.qkv(self.norm2(x)).reshape(x.shape[0] * self.num_heads, x.shape[1] // self.num_heads, 3, -1).unbind(2)
             w = AttentionOp.apply(q, k)
             a = torch.einsum('nqk,nck->ncq', w, v)
@@ -279,7 +278,8 @@ class SongUNet(torch.nn.Module):
         channel_mult        = [1,2,2,2],    # Per-resolution multipliers for the number of channels.
         channel_mult_emb    = 4,            # Multiplier for the dimensionality of the embedding vector.
         num_blocks          = 4,            # Number of residual blocks per resolution.
-        attn_resolutions    = [16],         # List of resolutions with self-attention.
+        attn_resolutions    = [8,],         # List of resolutions with self-attention.
+        mid_attn            = True,          # Added by SP: whether to use attention in the bottleneck of the network
         dropout             = 0.10,         # Dropout probability of intermediate activations.
         label_dropout       = 0,            # Dropout probability of class labels for classifier-free guidance.
 
@@ -325,10 +325,10 @@ class SongUNet(torch.nn.Module):
                 self.enc[f'{res}x{res}_conv'] = Conv3d(in_channels=cin, out_channels=cout, kernel=3, **init)
             else:
                 self.enc[f'{res}x{res}_down'] = UNetBlock(in_channels=cout, out_channels=cout, down=True, **block_kwargs)
-                if encoder_type == 'skip':
+                if encoder_type == 'skip': #we use 'standard' which is for DDPM++
                     self.enc[f'{res}x{res}_aux_down'] = Conv3d(in_channels=caux, out_channels=caux, kernel=0, down=True, resample_filter=resample_filter)
                     self.enc[f'{res}x{res}_aux_skip'] = Conv3d(in_channels=caux, out_channels=cout, kernel=1, **init)
-                if encoder_type == 'residual':
+                if encoder_type == 'residual': #only for NCSN++
                     self.enc[f'{res}x{res}_aux_residual'] = Conv3d(in_channels=caux, out_channels=cout, kernel=3, down=True, resample_filter=resample_filter, fused_resample=True, **init)
                     caux = cout
             for idx in range(num_blocks):
@@ -345,6 +345,7 @@ class SongUNet(torch.nn.Module):
         for level, mult in reversed(list(enumerate(channel_mult))):
             res = img_resolution >> level
             if level == len(channel_mult) - 1:
+                attn = (mid_attn or res in attn_resolutions)
                 self.dec[f'{res}x{res}_in0'] = UNetBlock(in_channels=cout, out_channels=cout, attention=attn, **block_kwargs) ###bug here attention was set to true instead of attn
                 self.dec[f'{res}x{res}_in1'] = UNetBlock(in_channels=cout, out_channels=cout, **block_kwargs)
             else:
@@ -353,8 +354,6 @@ class SongUNet(torch.nn.Module):
                 cin = cout + skips.pop()
                 cout = model_channels * mult
                 attn = (idx == num_blocks and res in attn_resolutions)
-                if attn:
-                    print(f"Adding decoder block {idx} at resolution {res} with attention={attn}...", flush=True)
                 self.dec[f'{res}x{res}_block{idx}'] = UNetBlock(in_channels=cin, out_channels=cout, attention=attn, **block_kwargs)
             if decoder_type == 'skip' or level == 0:
                 if decoder_type == 'skip' and level < len(channel_mult) - 1:
@@ -382,13 +381,19 @@ class SongUNet(torch.nn.Module):
         for name, block in self.enc.items():
             if 'aux_down' in name:
                 aux = block(aux)
+                #print(name, "x shape: ", x.shape, f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_skip' in name:
                 x = skips[-1] = x + block(aux)
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_residual' in name:
                 x = skips[-1] = aux = (x + block(aux)) / np.sqrt(2)
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             else:
                 x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 skips.append(x)
+            
+
 
         # Decoder.
         aux = None
@@ -396,13 +401,18 @@ class SongUNet(torch.nn.Module):
         for name, block in self.dec.items():
             if 'aux_up' in name:
                 aux = block(aux)
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_norm' in name:
                 tmp = block(x)
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_conv' in name:
                 tmp = block(silu(tmp))
                 aux = tmp if aux is None else tmp + aux
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             else:
                 if x.shape[1] != block.in_channels:
                     x = torch.cat([x, skips.pop()], dim=1)
                 x = block(x, emb)
+                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
+
         return aux
