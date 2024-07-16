@@ -90,7 +90,7 @@ def trace_handler(prof: torch.profiler.profile):
 
 
 
-def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., split_batch=True, one_box_per_epoch = True, device="cpu", multi_gpu = False,):
+def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., split_batch=True, sub_batch=4, one_box_per_epoch = True, device="cpu", multi_gpu = False,):
     """
     Train the model
     """
@@ -120,7 +120,7 @@ def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., sp
         T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-            sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None) # (2**(cut_factor.item()-1))**3 // 2 #4
+            sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=sub_batch, shuffle=False, sampler = None) # (2**(cut_factor.item()-1))**3 // 2 #4
 
             for j,(T21, delta, vbv, T21_lr) in enumerate(sub_dataloader):
                 #print(f"Sub {j}", flush=True)
@@ -237,7 +237,7 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_dsq_resid.set_yscale('log')
         ax_dsq_resid.grid()
         
-    plt.savefig(path + netG.model_name + "_quantiles_.png")
+    plt.savefig(path + netG.model_name + "_quantiles.png")
     plt.close()
 
 
@@ -639,7 +639,7 @@ def save_test_data(netG, test_dataloader, norm_factor = 3., path="", cut_factor=
 
 
 ###START main pytorch multi-gpu tutorial###
-def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56, model_channels = 32, norm_factor=1., memory_profiling=False, model_id=21):
+def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56, model_channels = 32, cut_factor=1, norm_factor=1., memory_profiling=False, model_id=21):
     multi_gpu = world_size > 1
 
     if multi_gpu:
@@ -684,7 +684,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             network_opt=network_opt,
             noise_schedule_opt=noise_schedule_opt,
             loss_fn = loss_fn,
-            learning_rate=1e-4,
+            learning_rate=1e-3,
             scheduler=False,
             rank=rank,
         )
@@ -763,7 +763,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             start_time = time.time()
         
         
-        avg_loss = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=1, norm_factor=norm_factor, split_batch=True, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
+        avg_loss = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=1, norm_factor=norm_factor, split_batch=True, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
 
 
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
@@ -790,7 +790,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         
         
         if len(netG.loss)>=validation_check_epoch:
-            if len(netG.loss)%20==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
+            if len(netG.loss)%50==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
                 
                 start_time_validation = time.time()
                 loss_validation, tensor_dict_validation = validation_step_v2(netG=netG, validation_dataloader=validation_dataloader, cut_factor=1, norm_factor=norm_factor, augment=True, split_batch = True, sub_batch = 4, one_box_validation=True, num_steps=100, device=device, multi_gpu=multi_gpu)
@@ -873,25 +873,21 @@ if __name__ == "__main__":
     world_size = torch.cuda.device_count()
     multi_gpu = world_size > 1
 
+    cut_factor = 1 #train on 128
+
     if multi_gpu:
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-        #for channel in [32,16,8,4]: #[32, 16, 8, 4]
-        #    for n_models in [56,28,1]: #[56, 28, 1]
-        #        if channel == 32 and n_models == 56:
-        #            continue
-        #        else:
-        #            mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, 1., False, 3), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
 
         for channel,n_models in zip([4,4,4], [56,28,1]): #added
             training_time = time.time()
-            mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, 1., False, 1), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+            mp.spawn(main, args=(world_size, 2000, 1, n_models, channel, cut_factor, 1., False, 1), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
             print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
     else:
         print("Not using multi_gpu",flush=True)
         try:
-            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=32, norm_factor=1., memory_profiling=False, model_id=4)#2*4)
+            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=32, cut_factor=cut_factor, norm_factor=1., memory_profiling=False, model_id=4)#2*4)
         except KeyboardInterrupt:
             print('Interrupted', flush=True)
             try:
