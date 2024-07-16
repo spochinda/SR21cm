@@ -810,8 +810,8 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         print(f"[{device}] Validation took {validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} smaller than minimum={loss_validation_min**0.5:.3f}", flush=True)
                         try:
                             print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
-                        except:
-                            pass
+                        except Exception as e:
+                            print(e, flush=True)
                     netG.save_network(fn+".pth")
                     saved_network_str = netG.model.module.state_dict().__str__()
                     
@@ -844,7 +844,10 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             #plot_hist(T21_1=tensor_dict["T21_pred"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+"hist_validation_after_validation_during.png", label="mean validation_after - during") #cant do this when I change to test_dataloader
             
             if rank==0:
-                print("Weights: ", netG.model.module.enc["64x64_conv"].weight[0,0,0], flush=True)
+                try:
+                    print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
+                except Exception as e:
+                    print(e, flush=True)
                 print("Loaded model identical to saved model: ", saved_network_str==netG.model.module.state_dict().__str__(), flush=True)
                 print(f"Test data saved RMSE={loss_validation**0.5:.3f}. Now Aborting...", flush=True)
             torch.distributed.barrier()
