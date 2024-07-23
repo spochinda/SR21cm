@@ -118,19 +118,104 @@ class Conv3d(torch.nn.Module):
         w_pad = w.shape[-1] // 2 if w is not None else 0
         f_pad = (f.shape[-1] - 1) // 2 if f is not None else 0
 
+        thresh = 0.5 * 2**31
+        cells = torch.tensor(x.shape).prod().item()
+
+
         if self.fused_resample and self.up and w is not None:
+            print("Fused resample up pads: ", w_pad, f_pad, flush=True)
             x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
             x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0))
         elif self.fused_resample and self.down and w is not None:
+            print("Fused resample down pads: ", w_pad, f_pad, flush=True)
             x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad)
             x = torch.nn.functional.conv3d(x, f.tile([self.out_channels, 1, 1, 1, 1]), groups=self.out_channels, stride=2)
         else:
             if self.up:
-                x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
+                filter = f.mul(8).tile([self.in_channels, 1, 1, 1, 1])
+                filter_out, filter_in, filter_h, filter_w, filter_d = filter.shape
+                print("Up pads: ", f_pad, filter_out, filter_in, filter_h, filter_w, filter_d, flush=True)
+                x = torch.nn.functional.pad(x, pad=(f_pad, f_pad, f_pad, f_pad, f_pad, f_pad), mode='reflect')
+
+                if cells >= thresh:
+                    print("Splitting up conv into chunks...", flush=True)
+                    b_, c_, h_, w_, d_ = x.shape
+                    cut_factor = h_ // (thresh / (b_ * c_) )**(1/3)
+                    cut_size = h_ // 2**cut_factor
+                    #unfold into smaller patches and reshape and permute to b,unfold_dim**3,c,dim,dim,dim
+                    x = x.unfold(dimension=2,size=cut_size+2*f_pad,step=cut_size).unfold(dimension=3,size=cut_size+2*f_pad,step=cut_size).unfold(dimension=4,size=cut_size+2*f_pad,step=cut_size)
+                    x = x.reshape(b_,c_,-1,cut_size+2*f_pad,cut_size+2*f_pad,cut_size+2*f_pad)
+                    x = x.permute(0,2,1,3,4,5)
+                    #split into chunks to avoid OOM cudnn error
+                    nchunks = 2**cut_factor 
+                    b_chunk = x.shape[1]//nchunks
+                    x = list(x.chunk(chunks=nchunks, dim=1))
+                    #convolve each chunk: first collapse batch and batch_chunk dimensions, then convolve, then reshape back
+                    x = torch.cat([torch.nn.functional.conv_transpose3d(patch.reshape(-1,c_, cut_size+2*f_pad, cut_size+2*f_pad, cut_size+2*f_pad), filter, padding=0, stride=2, groups=c_).reshape(b_,b_chunk,filter_out,cut_size*2,cut_size*2,cut_size*2) for patch in x],dim=1) #up
+                    x = x.permute(0,2,1,3,4,5)
+                    x = x.reshape(b_,filter_out, h_//cut_size, w_//cut_size, d_//cut_size,cut_size*2,cut_size*2,cut_size*2) #up
+                    #permute to b,c_out,3*(unfold_dim, dim) and reshape back to b,c_out,h,w,d
+                    x = x.permute(0, 1, 2, 5, 3, 6, 4, 7)
+                    x = x.reshape(b_, filter_out, h_*2,w_*2,d_*2) #up
+                else:
+                    x = torch.nn.functional.conv_transpose3d(x, filter, groups=self.in_channels, stride=2, padding=f_pad)
             if self.down:
-                x = torch.nn.functional.conv3d(x, f.tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=f_pad)
+                filter = f.tile([self.in_channels, 1, 1, 1, 1])
+                filter_out, filter_in, filter_h, filter_w, filter_d = filter.shape
+                print("Down pads: ", f_pad, filter_out, filter_in, filter_h, filter_w, filter_d, flush=True)
+                x = torch.nn.functional.pad(x, pad=(f_pad, f_pad, f_pad, f_pad, f_pad, f_pad), mode='reflect')
+                
+                if cells >= thresh:
+                    
+                    print("Splitting down conv into chunks...", flush=True)
+                    b_, c_, h_, w_, d_ = x.shape
+                    cut_factor = h_ // (thresh / (b_ * c_) )**(1/3)
+                    cut_size = h_ // 2**cut_factor
+                    #unfold into smaller patches and reshape and permute to b,unfold_dim**3,c,dim,dim,dim
+                    x = x.unfold(dimension=2,size=cut_size+2*f_pad,step=cut_size).unfold(dimension=3,size=cut_size+2*f_pad,step=cut_size).unfold(dimension=4,size=cut_size+2*f_pad,step=cut_size)
+                    x = x.reshape(b_,c_,-1,cut_size+2*f_pad,cut_size+2*f_pad,cut_size+2*f_pad)
+                    x = x.permute(0,2,1,3,4,5)
+                    #split into chunks to avoid OOM cudnn error
+                    nchunks = 2**cut_factor 
+                    b_chunk = x.shape[1]//nchunks
+                    x = list(x.chunk(chunks=nchunks, dim=1))
+                    #convolve each chunk: first collapse batch and batch_chunk dimensions, then convolve, then reshape back
+                    x = torch.cat([torch.nn.functional.conv3d(patch.reshape(-1,c_, cut_size+2*f_pad, cut_size+2*f_pad, cut_size+2*f_pad), filter, padding=0, stride=2, groups=c_).reshape(b_,b_chunk,filter_out,cut_size//2,cut_size//2,cut_size//2) for patch in x],dim=1) #down
+                    x = x.permute(0,2,1,3,4,5)
+                    x = x.reshape(b_, filter_out, h_//cut_size, w_//cut_size, d_//cut_size,cut_size//2,cut_size//2,cut_size//2) #down
+                    x = x.permute(0, 1, 2, 5, 3, 6, 4, 7)
+                    x = x.reshape(b_, filter_out, h_//2,w_//2,d_//2) #down
+                else:
+                    x = torch.nn.functional.conv3d(x, filter, groups=self.in_channels, stride=2, padding=f_pad)
+            
             if w is not None:
-                x = torch.nn.functional.conv3d(x, w, padding=w_pad)
+                print("Conv pads: ", w_pad, w.shape, flush=True)
+                x = torch.nn.functional.pad(x, pad=(w_pad, w_pad, w_pad, w_pad, w_pad, w_pad), mode='reflect')
+                
+                if cells >= thresh:
+                    print("Splitting normal conv into chunks...", flush=True)
+                    b_, c_, h_, w_, d_ = x.shape
+                    cut_factor = h_ // (thresh / (b_ * c_) )**(1/3)
+                    cut_size = h_ // 2**cut_factor
+                    #unfold into smaller patches and reshape and permute to b,unfold_dim**3,c,dim,dim,dim
+                    x = x.unfold(dimension=2,size=cut_size+2*w_pad,step=cut_size).unfold(dimension=3,size=cut_size+2*w_pad,step=cut_size).unfold(dimension=4,size=cut_size+2*w_pad,step=cut_size)
+                    x = x.reshape(b_,c_,-1,cut_size+2*w_pad,cut_size+2*w_pad,cut_size+2*w_pad)
+                    x = x.permute(0,2,1,3,4,5)
+                    #split into chunks to avoid OOM cudnn error
+                    nchunks = 2**cut_factor 
+                    b_chunk = x.shape[1]//nchunks
+                    x = list(x.chunk(chunks=nchunks, dim=1))
+                    #convolve each chunk: first collapse batch and batch_chunk dimensions, then convolve, then reshape back
+                    x = torch.cat([torch.nn.functional.conv3d(patch.reshape(-1,c_, cut_size+2*w_pad, cut_size+2*w_pad, cut_size+2*w_pad), w, padding=0).reshape(b_,b_chunk,self.out_channels,cut_size,cut_size,cut_size) for patch in x],dim=1) #normal
+                    #permute to b,c,b_chunk,h,w,d and reshape to b,c_out,3*unfold_dim,dim,dim,dim
+                    x = x.permute(0,2,1,3,4,5)
+                    x = x.reshape(b_,self.out_channels, h_//cut_size, w_//cut_size, d_//cut_size,cut_size,cut_size,cut_size) #normal
+                    #permute to b,c_out,3*(unfold_dim, dim) and reshape back to b,c_out,h,w,d
+                    x = x.permute(0, 1, 2, 5, 3, 6, 4, 7)
+                    x = x.reshape(b_, self.out_channels, h_, w_ , d_) #normal
+                else:
+                    x = torch.nn.functional.conv3d(x, w, padding=0)
+        
         if b is not None:
             x = x.add_(b.reshape(1, -1, 1, 1, 1))
         return x
@@ -378,17 +463,17 @@ class SongUNet(torch.nn.Module):
         aux = x
         for name, block in self.enc.items():
             if 'aux_down' in name:
+                print(name, "enc x shape: ", x.shape, f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 aux = block(aux)
-                #print(name, "x shape: ", x.shape, f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_skip' in name:
+                print(name, "enc x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = skips[-1] = x + block(aux)
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_residual' in name:
+                print(name, "enc x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = skips[-1] = aux = (x + block(aux)) / np.sqrt(2)
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             else:
+                print(name, "enc x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 skips.append(x)
             
 
@@ -398,19 +483,19 @@ class SongUNet(torch.nn.Module):
         tmp = None
         for name, block in self.dec.items():
             if 'aux_up' in name:
+                print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 aux = block(aux)
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_norm' in name:
+                print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 tmp = block(x)
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             elif 'aux_conv' in name:
+                print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 tmp = block(silu(tmp))
                 aux = tmp if aux is None else tmp + aux
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
             else:
                 if x.shape[1] != block.in_channels:
                     x = torch.cat([x, skips.pop()], dim=1)
+                print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = block(x, emb)
-                #print(name, "x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
 
         return aux
