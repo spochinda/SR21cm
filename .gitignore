@@ -2,6 +2,7 @@ IC/
 notebooks/*
 outputs/
 analysis/*
+!analysis/test_split_conv.py
 !analysis/sampling_stepsize.py
 !analysis/sampling_models_rmse.py
 !analysis/sampling_scales.py
