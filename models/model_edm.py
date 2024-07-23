@@ -122,11 +122,11 @@ class Conv3d(torch.nn.Module):
 
 
         if self.fused_resample and self.up and w is not None:
-            print("Fused resample up pads: ", w_pad, f_pad, flush=True)
+            #print("Fused resample up pads: ", w_pad, f_pad, flush=True)
             x = torch.nn.functional.conv_transpose3d(x, f.mul(8).tile([self.in_channels, 1, 1, 1, 1]), groups=self.in_channels, stride=2, padding=max(f_pad - w_pad, 0))
             x = torch.nn.functional.conv3d(x, w, padding=max(w_pad - f_pad, 0))
         elif self.fused_resample and self.down and w is not None:
-            print("Fused resample down pads: ", w_pad, f_pad, flush=True)
+            #print("Fused resample down pads: ", w_pad, f_pad, flush=True)
             x = torch.nn.functional.conv3d(x, w, padding=w_pad+f_pad)
             x = torch.nn.functional.conv3d(x, f.tile([self.out_channels, 1, 1, 1, 1]), groups=self.out_channels, stride=2)
         else:
@@ -135,12 +135,12 @@ class Conv3d(torch.nn.Module):
                 filter = f.mul(8).tile([self.in_channels, 1, 1, 1, 1])
                 filter_out, filter_in, filter_h, filter_w, filter_d = filter.shape
                 cells = b_* max(filter_in,filter_out) *h_*w_*d_
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print("Up pads: ", f_pad, filter_out, filter_in, filter_h, filter_w, filter_d, f"{cells:,}", f"{thresh:,}", cells >= thresh, flush=True)
                 x = torch.nn.functional.pad(x, pad=(f_pad, f_pad, f_pad, f_pad, f_pad, f_pad), mode='constant', value=0)
                 
                 if cells >= thresh:
-                    if torch.cuda.current_device()==0:
+                    if False:#if torch.cuda.current_device()==0:
                         print("Splitting up conv into chunks...", flush=True)
                     
                     cut_factor = int(h_ // (thresh / (b_ * c_) )**(1/3))
@@ -167,12 +167,12 @@ class Conv3d(torch.nn.Module):
                 filter = f.tile([self.in_channels, 1, 1, 1, 1])
                 filter_out, filter_in, filter_h, filter_w, filter_d = filter.shape
                 cells = b_* max(filter_in,filter_out) *h_*w_*d_
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print("Down pads: ", f_pad, filter_out, filter_in, filter_h, filter_w, filter_d, f"{cells:,}", f"{thresh:,}", cells >= thresh, flush=True)
                 x = torch.nn.functional.pad(x, pad=(f_pad, f_pad, f_pad, f_pad, f_pad, f_pad), mode='constant', value=0)
                 
                 if cells >= thresh:
-                    if torch.cuda.current_device()==0:
+                    if False:#if torch.cuda.current_device()==0:
                         print("Splitting down conv into chunks...", flush=True)
                     
                     cut_factor = int(h_ // (thresh / (b_ * c_) )**(1/3))
@@ -199,10 +199,10 @@ class Conv3d(torch.nn.Module):
                 b_, c_, h_, w_, d_ = x.shape
                 cells = b_* max(self.out_channels,self.in_channels) *h_*w_*d_
                 x = torch.nn.functional.pad(x, pad=(w_pad, w_pad, w_pad, w_pad, w_pad, w_pad), mode='constant', value=0)
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print("Conv pads: ", w_pad, w.shape, f"{cells:,}", f"{thresh:,}", cells >= thresh, flush=True)
                 if cells >= thresh:
-                    if torch.cuda.current_device()==0:
+                    if False:#if torch.cuda.current_device()==0:
                         print("Splitting normal conv into chunks...", flush=True)
                     
                     cut_factor = int(h_ // (thresh / (b_ * c_) )**(1/3))
@@ -474,19 +474,19 @@ class SongUNet(torch.nn.Module):
         aux = x
         for name, block in self.enc.items():
             if 'aux_down' in name:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "enc x shape: ", x.shape, f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 aux = block(aux)
             elif 'aux_skip' in name:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "enc x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = skips[-1] = x + block(aux)
             elif 'aux_residual' in name:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "enc x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = skips[-1] = aux = (x + block(aux)) / np.sqrt(2)
             else:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "enc x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = block(x, emb) if isinstance(block, UNetBlock) else block(x)
                 skips.append(x)
@@ -498,22 +498,22 @@ class SongUNet(torch.nn.Module):
         tmp = None
         for name, block in self.dec.items():
             if 'aux_up' in name:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 aux = block(aux)
             elif 'aux_norm' in name:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 tmp = block(x)
             elif 'aux_conv' in name:
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 tmp = block(silu(tmp))
                 aux = tmp if aux is None else tmp + aux
             else:
                 if x.shape[1] != block.in_channels:
                     x = torch.cat([x, skips.pop()], dim=1)
-                if torch.cuda.current_device()==0:
+                if False:#if torch.cuda.current_device()==0:
                     print(name, "dec x shape: ", x.shape,  f"cells: {torch.prod(torch.tensor(x.shape)):,}")
                 x = block(x, emb)
 
