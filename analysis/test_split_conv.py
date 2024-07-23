@@ -16,7 +16,7 @@ def ddp_setup(rank: int, world_size: int):
         os.environ["MASTER_ADDR"] = "localhost"
 
     
-    os.environ["MASTER_PORT"] = "2595"#"12355" 
+    os.environ["MASTER_PORT"] = "2596"#"12355" 
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
 
@@ -39,8 +39,8 @@ def main(rank, world_size=0,mp=True):
     
     network = SongUNet
 
-    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                model_channels=16, channel_mult=[1,2,4,8,16], attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+    network_opt = dict(img_resolution=128, in_channels=8, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+                model_channels=8, channel_mult=[1,2,4,8,16], attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                 embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                 )
     noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
@@ -87,8 +87,8 @@ if __name__ == "__main__":
     world_size = torch.cuda.device_count()
     multi_gpu = world_size > 1
     
-    mp=False
-    if mp:
-        mp.spawn(main, args=(world_size,mp), nprocs=world_size)
+    mp_=False#True
+    if mp_:
+        mp.spawn(main, args=(world_size,mp_), nprocs=world_size//2)
     else:
-        main(torch.cuda.current_device(),world_size,mp)
+        main(torch.cuda.current_device(),world_size,mp_)
