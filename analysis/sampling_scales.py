@@ -40,11 +40,11 @@ def sample_scales(rank, world_size, cut_factor=2, split_batch = True, sub_batch=
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
 
 
-    channels = 16#int(model_path.split("channels_")[1].split("_")[0])
+    channels = 8#int(model_path.split("channels_")[1].split("_")[0])
 
     
     network_opt = dict(img_resolution=64, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                model_channels=channels, channel_mult=[2,2,2], attn_resolutions=[], #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                model_channels=channels, channel_mult=[1,2,4,8,16], attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                 embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                 )
 
@@ -69,13 +69,13 @@ def sample_scales(rank, world_size, cut_factor=2, split_batch = True, sub_batch=
         )
     
     netG.model_name = model_path.split("/")[-1].split(".pth")[0]
-    #netG.load_network(model_path)
+    netG.load_network(model_path)
 
 
 
 
-    #test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-    test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
+    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
                                     redshifts=[10,], IC_seeds=list(range(72,80)), upscale=4, cut_factor=0, transform=False, norm_lr=True, device=device)
     test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=1, shuffle=False if multi_gpu else True,
                                                     sampler = DistributedSampler(test_data_module) if multi_gpu else None)
@@ -85,7 +85,7 @@ def sample_scales(rank, world_size, cut_factor=2, split_batch = True, sub_batch=
     if rank==0:
         print(f"RMSE={loss_validation**0.5:.3f}, cut_factor={cut_factor}, num_steps={num_steps}", flush=True)
         torch.save(obj=tensor_dict,
-                    f=path + f"/analysis/model_3/save_data_tensors_{netG.model_name}_scale_{cut_factor}.pth")
+                    f=path + f"/analysis/model_5/save_data_tensors2_{netG.model_name}_scale_{cut_factor}.pth")
         # #tensors_cut_{cut_factor}_model_{netG.model_name}.pth
         
     if multi_gpu:
@@ -103,11 +103,11 @@ if __name__ == "__main__":
     multi_gpu = world_size > 1
 
     path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
-    model = "DDPMpp_standard_channels_32_tts_70_VPSDE_3_normfactor1.pth"
+    model = "DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_2_normfactor1.pth"
 
-    cut_factors = [0,1]
-    sub_batches = [1,1]
-    split_batches = [False, True]
+    cut_factors = [0,]
+    sub_batches = [1,]
+    split_batches = [True,]
 
     if multi_gpu:
         print("Using multi_gpu", flush=True)
@@ -123,7 +123,7 @@ if __name__ == "__main__":
                     split_batch, #True
                     sub_batch, #1
                     100, #steps
-                    path+f"/trained_models/model_3/{model}",
+                    path+f"/trained_models/model_5/{model}",
                     ), 
                 nprocs=world_size
                 )
@@ -133,4 +133,4 @@ if __name__ == "__main__":
         print("Not using multi_gpu",flush=True)
 
         for cut_factor,sub_batch in zip(cut_factors,sub_batches):
-            sample_scales(rank=0, world_size=0, cut_factor=cut_factor, split_batch=True, sub_batch=sub_batch, model_path=path+f"/trained_models/model_3/{model}",)
+            sample_scales(rank=0, world_size=0, cut_factor=cut_factor, split_batch=True, sub_batch=sub_batch, model_path=path+f"/trained_models/model_5/{model}",)
