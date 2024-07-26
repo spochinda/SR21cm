@@ -445,14 +445,16 @@ def sample_model(netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, sp
     assert augment >= 0 or augment <= 24, "augment has to be between 0 and 24"
 
     #netG.model.eval() #already inside Euler_Maruyama_sampler
-    for i,(T21, delta, vbv, labels) in tqdm(enumerate(dataloader), desc='validation loop', total=len(dataloader), disable=False if str(device)=="cuda:0" else True):
+    for i,(T21, delta, vbv, labels) in tqdm(enumerate(dataloader), desc='sampling loop', total=len(dataloader), disable=False if str(device)=="cuda:0" else True):
         #iterating over 256 cubes (batch should be 1)
         
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
         delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
         vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
         T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear') # get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
-                    
+        if augment:
+            T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=augment) #support device
+
         T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
         T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
         
@@ -462,14 +464,12 @@ def sample_model(netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, sp
         T21, _,_ = normalize(T21, mode="standard", factor=norm_factor, x_mean=T21_lr_mean, x_std=T21_lr_std)#, factor=2.) #####
         delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)#, factor=2.)
         vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)#, factor=2.)
-        if augment:
-            T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=augment) #support device
             
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std)
             sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=sub_batch, shuffle=False, sampler = None) 
             
-            for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='validation subloop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
+            for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='sampling subloop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
                 if False:#(i==j==0) and (str(device)=='cuda:0'):
                     print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
                     plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_7/plot_input_validation.png")
@@ -860,7 +860,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             netG.load_network(fn+".pth")
 
             #MSE_save, tensor_dict = save_test_data(netG=netG, test_dataloader=validation_dataloader, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen", cut_factor=2, device=device)
-            loss_validation, tensor_dict = sample_model(netG=netG, dataloader=test_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, augment=0, split_batch = True, sub_batch = 4, n_boxes=-1, num_steps=100, device=device, multi_gpu=multi_gpu)
+            loss_validation, tensor_dict = sample_model(netG=netG, dataloader=test_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, augment=24, split_batch = True, sub_batch = 4, n_boxes=-1, num_steps=100, device=device, multi_gpu=multi_gpu)
             path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_7/"
             plot_sigmas(**tensor_dict, netG=netG, path = path_plot + "save_test_data_",  quantiles=[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
             
