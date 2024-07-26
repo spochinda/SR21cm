@@ -27,6 +27,7 @@ class GaussianDiffusion(nn.Module):
         loss_fn = None,
         learning_rate=1e-4,
         scheduler=False,
+        mp = False,
         rank = 0,
     ):
         super().__init__()
@@ -44,13 +45,13 @@ class GaussianDiffusion(nn.Module):
         self.network_opt = network_opt
         self.model = self.network(**self.network_opt).to(self.device)
         #init_weights(self.model, init_type='orthogonal')
-        if self.multi_gpu:
+        if mp and self.multi_gpu:
             self.model = DDP(self.model, device_ids=[rank])
 
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate,) #weight_decay=1e-5)
         self.scheduler = scheduler
         if self.scheduler:
-            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optG, gamma=0.992354, last_epoch=-1) #gamma=0.99954 (5000), gamma=0.992354 (300)
+            self.scheduler = torch.optim.lr_scheduler.ExponentialLR(self.optG, gamma=0.998466, last_epoch=-1) #gamma=0.99954 (5000), gamma=0.999079 (2500), gamma=0.998466 (1500), gamma=0.992354 (300)
         
         self.ema = ExponentialMovingAverage(self.model.parameters(), decay=0.9999)
         self.loss = []
@@ -92,14 +93,14 @@ class GaussianDiffusion(nn.Module):
             
         
     def predict_start_from_noise(self, x_t, t, noise):
-        b,(*d) = x_t.shape
+        b,*d = x_t.shape
         alpha_cumprod_t = self.alphas_cumprod[t].view(b,*[1]*len(d))
         x0 = x_t/torch.sqrt(alpha_cumprod_t) - torch.sqrt(1-alpha_cumprod_t) * noise/torch.sqrt(alpha_cumprod_t)
         return x0
 
     def q_sample(self, x0, t, noise=None): #forward diffusion
         #"t and batch number dim should be the same"
-        b,(*d) = x0.shape
+        b,*d = x0.shape
 
         t=torch.tensor(t).view(b,*[1]*len(d))
         noise = torch.randn_like(x0, device=self.device) if noise==None else noise
@@ -117,7 +118,7 @@ class GaussianDiffusion(nn.Module):
     @torch.no_grad()
     def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, sampler = "DDPM SR3", ema=False):
         assert False, "Deprecated use samplers.py instead"
-        b,(*d) = x_t.shape
+        b,*d = x_t.shape
         time = t
         t=torch.tensor(b*[t]).view(b,*[1]*len(d))
         
@@ -218,7 +219,7 @@ class GaussianDiffusion(nn.Module):
         self.model.eval()
         sample_inter = t_steps//n_save if n_save <= t_steps else 1
         #print("sample inter: {0}, t_steps {1}, n_save {2}".format(sample_inter, t_steps, n_save))
-        b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
+        b,*d  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
         
         x_t = torch.randn((b,*d), device=device)
         x_sequence = [x_t] #use channel dimension as time axis

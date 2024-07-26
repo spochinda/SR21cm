@@ -137,7 +137,7 @@ class Conv3d(torch.nn.Module):
                 cells = b_* max(filter_in,filter_out) *h_*w_*d_
                 x = torch.nn.functional.pad(x, pad=(f_pad, f_pad, f_pad, f_pad, f_pad, f_pad), mode='constant', value=0)
                 
-                if True:#cells >= thresh:
+                if cells >= thresh:
                     if False:#torch.cuda.current_device()==0:
                         print("Up pads: ", f_pad, filter_out, filter_in, filter_h, filter_w, filter_d, f"{cells:,}", f"{thresh:,}", cells >= thresh, flush=True)
                     cut_factor = int(h_ // (thresh / (b_ * c_) )**(1/3))
@@ -168,7 +168,7 @@ class Conv3d(torch.nn.Module):
                 
                 x = torch.nn.functional.pad(x, pad=(f_pad, f_pad, f_pad, f_pad, f_pad, f_pad), mode='constant', value=0)
                 
-                if True:#cells >= thresh:
+                if cells >= thresh:
                     if False:#torch.cuda.current_device()==0:
                         print("Down cells, thresh: ", f"{cells:,}", f"{thresh:,}", cells >= thresh, flush=True)
                     cut_factor = int(h_ // (thresh / (b_ * c_) )**(1/3))
@@ -197,7 +197,7 @@ class Conv3d(torch.nn.Module):
                 cells = b_* max(self.out_channels,self.in_channels) *h_*w_*d_
                 x = torch.nn.functional.pad(x, pad=(w_pad, w_pad, w_pad, w_pad, w_pad, w_pad), mode='constant', value=0)
 
-                if True:#cells >= thresh:
+                if cells >= thresh:
                     if False:#torch.cuda.current_device()==0:
                         print("Conv cells, thresh: ", f"{cells:,}", f"{thresh:,}", cells >= thresh, flush=True)
                     cut_factor = int(h_ // (thresh / (b_ * c_) )**(1/3)) + 1
