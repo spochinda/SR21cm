@@ -1,8 +1,33 @@
 #import contextlib
-import contextlib
 import torch
 import socket
 from datetime import datetime, timedelta
+
+import torch 
+import torch.distributed
+import torch.utils
+
+from utils import *
+from diffusion import *
+from model import *
+from model_edm import SongUNet
+from loss import *
+
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
+
+import torch.multiprocessing as mp
+import torch.utils
+from torch.utils.data.distributed import DistributedSampler
+from torch.distributed import init_process_group, destroy_process_group
+
+import time
+import sys
+import os
+
+import argparse
+
+
 """
 def trace_handler(prof: torch.profiler.profile):
    # Prefix for file names.
@@ -33,32 +58,6 @@ with torch.profiler.profile(
 
 prof.export_memory_timeline("memory_trace.html")
 """
-import torch 
-import torch.distributed
-import torch.utils
-
-from utils import *
-from diffusion import *
-from model import *
-from model_edm import SongUNet
-from loss import *
-from sde_lib import VPSDE
-
-
-import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
-
-import torch.multiprocessing as mp
-import torch.utils
-from torch.utils.data.distributed import DistributedSampler
-from torch.distributed import init_process_group, destroy_process_group
-
-import time
-import sys
-import os
-
-
-#from torch_ema import ExponentialMovingAverage
 
 
 def ddp_setup(rank: int, world_size: int):
@@ -896,7 +895,22 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
 if __name__ == "__main__":
-    
+    # Create an ArgumentParser object
+    parser = argparse.ArgumentParser()
+
+    # Add the optional arguments
+    parser.add_argument("--nmodels", type=int, default=56, help="nmodels")
+    parser.add_argument("--channels", type=int, default=8, help="channels")
+    parser.add_argument("--id", type=int, default=1, help="id")
+
+    # Parse the command-line arguments
+    args = parser.parse_args()
+
+    # Access the values of the optional arguments
+    channels = args.channels
+    nmodels = args.nmodels
+    id = args.id
+
     
     print("PyTorch version: ", torch.__version__)
     print("CUDA version: ", torch.version.cuda)
@@ -911,7 +925,8 @@ if __name__ == "__main__":
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
 
-        for channel,n_models,id in zip([8,8,4], [56,28,28], [3,2,3,3]): #added
+        for channel,n_models,id in zip([channels,], [nmodels,], [id,]): #[8,8,4], [56,28,28], [3,2,3,3]
+            print(f"Training with {n_models} models and {channel} channels", flush=True)
             training_time = time.time()
             mp.spawn(main, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
             print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
