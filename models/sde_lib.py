@@ -27,7 +27,7 @@ class VPSDE():
     return 1
 
   def sde(self, x, t):
-    b,(*d)  = x.shape
+    b,*d  = x.shape
     beta_t = (self.beta_min + t * (self.beta_max - self.beta_min)).view(b,*[1]*len(d)).to(x.device)
     #print("beta shape", beta_t.shape)
     drift = -0.5 * beta_t * x

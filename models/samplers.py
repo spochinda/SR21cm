@@ -25,7 +25,7 @@ class Sampler():
         assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Sampler only supports VPSDE schedule type."
         
         netG.model.eval()
-        b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (order is delta,vbv)
+        b,*d  = conditionals[-1].shape #select the last conditional to get the shape (order is delta,vbv)
 
         #batch_size = conditionals[0].shape[0]
         #t = torch.ones(b, )
@@ -112,7 +112,7 @@ class Sampler():
         netG.model.eval()
         #x_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(x_lr)
 
-        b,(*d)  = x_lr.shape #select the last conditional to get the shape (order is delta,vbv)
+        b,*d  = x_lr.shape #select the last conditional to get the shape (order is delta,vbv)
         batch_time_step = torch.ones(size=(b,*[1]*len(d)),dtype=torch.float32, device=x_lr.device)
         #torch.tensor(b*[1.], device=conditionals[-1].device).view(b,*[1]*len(d))
 
@@ -181,7 +181,7 @@ class Sampler():
         
         netG.model.eval()
 
-        b,(*d)  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
+        b,*d  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
         x_t = torch.randn((b,*d), device=conditionals[-1].device)
         x_sequence = [x_t] #use channel dimension as time axis
         sampling_timesteps = len(self.ddim_timesteps)
@@ -240,7 +240,7 @@ class Sampler():
         
 
 
-        b,(*d)  = conditionals[-1].shape
+        b,*d  = conditionals[-1].shape
 
         x_t = torch.randn((b,*d), device=conditionals[-1].device)
         x = [x_t]
@@ -306,7 +306,7 @@ class Sampler():
         netG.model.eval()
         sample_inter = netG.timesteps//n_save if n_save <= netG.timesteps else 1
 
-        b,(*d)  = conditionals[-1].shape
+        b,*d  = conditionals[-1].shape
         
         x_t = torch.randn((b,*d))
         x_sequence = [x_t] #use channel dimension as time axis
@@ -355,7 +355,7 @@ class Sampler():
         netG.model.eval()
         sample_inter = netG.timesteps//n_save if n_save <= netG.timesteps else 1
 
-        b,(*d)  = conditionals[-1].shape
+        b,*d  = conditionals[-1].shape
         
         x_t = torch.randn((b,*d))
         x_sequence = [x_t] #use channel dimension as time axis

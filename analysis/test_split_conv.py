@@ -16,7 +16,7 @@ def ddp_setup(rank: int, world_size: int):
         os.environ["MASTER_ADDR"] = "localhost"
 
     
-    os.environ["MASTER_PORT"] = "2596"#"12355" 
+    os.environ["MASTER_PORT"] = "2595"#"12355" 
     torch.cuda.set_device(rank)
     init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
 
@@ -39,12 +39,15 @@ def main(rank, world_size=0,mp=True):
     
     network = SongUNet
 
-    network_opt = dict(img_resolution=128, in_channels=8, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
                 model_channels=8, channel_mult=[1,2,4,8,16], attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                 embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                 )
     noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
-
+    #8 channels: mult: 1,2,8,32,128 attn_res: 8
+    #8 channels: mult: 1,2,4,8,16 attn_res: 8
+    #16 channels: mult: 1,2,4,32,128 attn_res: [] failed even without midattn
+    #16 channels: mult: 1,2,4,8,16 attn_res: [] failed even without midattn
     loss_fn = None #VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5)
 
     netG = GaussianDiffusion(
@@ -64,12 +67,14 @@ def main(rank, world_size=0,mp=True):
 
     pytorch_total_params = sum(p.numel() for p in netG.model.parameters() if p.requires_grad)
     print(f"{pytorch_total_params:,} trainable parameters", flush=True)
-
-    x = torch.randn(1,4,512,512,512, device=device)
-    b,c,h,w,d = x.shape
-    noise_labels = torch.rand(size=(b,1,1,1,1), device=device)
+    netG.model.eval()
     with torch.no_grad():
+        x = torch.randn(1,4,512,512,512, device=device).detach()
+        b,c,h,w,d = x.shape
+        noise_labels = torch.rand(size=(b,1,1,1,1), device=device)
+    
         score = netG.model(x=x, noise_labels=noise_labels.flatten(), class_labels=None, augment_labels=None)
+    
     if torch.cuda.current_device()==0:
         print(f"[{str(device)}] Completed forward pass through model...", flush=True)
     
@@ -89,6 +94,6 @@ if __name__ == "__main__":
     
     mp_=False#True
     if mp_:
-        mp.spawn(main, args=(world_size,mp_), nprocs=world_size//2)
+        mp.spawn(main, args=(world_size,mp_), nprocs=world_size)
     else:
         main(torch.cuda.current_device(),world_size,mp_)

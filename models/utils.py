@@ -267,7 +267,7 @@ def augment_dataset(T21, delta, vbv, T21_lr, n=8):
 
 def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="torch", device="cpu"):
     #Simulation box variables
-    batch, channel,(*d) = data_x.shape
+    batch, channel,*d = data_x.shape
     assert channel == 1, "Channel must be 1"
     Npix = d[-1]
     Vpix = Lpix**3
@@ -315,7 +315,7 @@ def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="tor
 @torch.no_grad()
 def get_subcubes(cubes, cut_factor=0):
     if cut_factor > 0:
-        batch, channel,(*d) = cubes.shape
+        batch, channel,*d = cubes.shape
         image_size = d[0]//(2**cut_factor)
         sub_cubes = []
         for cube in cubes:

@@ -123,7 +123,7 @@ class SelfAttention(nn.Module):
 
     def forward(self, input):
         #print("Executing attention block")
-        batch, channel,(*d) = input.shape
+        batch, channel,*d = input.shape
         n_head = self.n_head
         head_dim = channel // n_head
 

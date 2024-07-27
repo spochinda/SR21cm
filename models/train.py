@@ -441,7 +441,7 @@ def plot_hist(T21_1, T21_2, path="", label="true diff", **kwargs):
 @torch.no_grad()
 def sample_model(netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, device="cpu", multi_gpu=False):
     assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Only VPSDE sampler supported for sample_model"
-    assert n_boxes > 0 or n_boxes == -1, "n_boxes has to be at least 1 or -1 for all boxes"
+    assert n_boxes > 0 or n_boxes == -1, "n_boxes has to be greater than 0 or -1 for all boxes"
     assert augment >= 0 or augment <= 24, "augment has to be between 0 and 24"
 
     #netG.model.eval() #already inside Euler_Maruyama_sampler
@@ -759,7 +759,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         #prof.step()
     
     #test 512 boxes forward pass through model to see if we get OOM
-    if multi_gpu:
+    if False:#multi_gpu:
         torch.distributed.barrier()
         print(f"[{str(device)}] Testing forward pass through model...", flush=True)
         with torch.no_grad():
@@ -789,9 +789,10 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
-            print("[{0}]: Epoch {1} in {2:.2f}s | loss: {3:.3f}, mean(loss[-10:]): {4:.3f}, loss min: {5:.3f}, learning rate: {6:.3e}".format(str(device), len(netG.loss), time.time()-start_time, 
-                                                                                                                                              avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), 
-                                                                                                                                              torch.min(torch.tensor(netG.loss)).item(), netG.optG.param_groups[0]['lr']), flush=True)
+            print("[{0}]: Epoch {1} in {2:.2f}s | loss: {3:.3f}, mean(loss[-10:]): {4:.3f}, loss min: {5:.3f}, \
+                  learning rate: {6:.3e}".format(str(device), len(netG.loss), time.time()-start_time, 
+                                                 avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(),
+                                                 torch.min(torch.tensor(netG.loss)).item(), netG.optG.param_groups[0]['lr']), flush=True)
 
         if netG.scheduler is not False:
             netG.scheduler.step()
@@ -874,11 +875,11 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             
             if rank==0:
                 print(f"Test data saved RMSE={loss_validation**0.5:.3f}. Now Aborting...", flush=True)
-                try:
-                    print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
-                    print("Loaded model identical to saved model: ", saved_network_str==netG.model.module.state_dict().__str__(), flush=True)
-                except Exception as e:
-                    print(e, flush=True)
+                #try:
+                #    print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
+                #    print("Loaded model identical to saved model: ", saved_network_str==netG.model.module.state_dict().__str__(), flush=True)
+                #except Exception as e:
+                #    print(e, flush=True)
                 
             torch.distributed.barrier()
             break
@@ -910,9 +911,9 @@ if __name__ == "__main__":
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
 
-        for channel,n_models,mult in zip([8,4], [28,28], [ [1,2,4,8,16], [1,2,4,8,16] ]): #added
+        for channel,n_models,id in zip([8,8,4], [56,28,28], [3,2,3,3]): #added
             training_time = time.time()
-            mp.spawn(main, args=(world_size, 10000, 1, n_models, channel, mult, cut_factor, 1., False, 3), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+            mp.spawn(main, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
             print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
     else:
         print("Not using multi_gpu",flush=True)

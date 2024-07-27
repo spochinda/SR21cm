@@ -69,7 +69,7 @@ def loss_fn(netG, batch_size, x_true, x_lr = None, conditionals = None):
         loss = torch.nn.MSELoss(reduction='mean')(target_noise, model_pred) # loss per x_true
     
     else:
-        b, (*d) = x_true.shape
+        b, *d = x_true.shape
         eps = 1e-5
         ts = torch.rand(b, device=x_true.device) * (1. - eps) + eps  
         xt, target_noise, std = netG.q_sample(x0=x_true, t=ts, noise=None)
