@@ -10,9 +10,9 @@ class VPLoss:
         b,c,*d = images.shape
         #t = torch.rand(size=(images.shape[0],1,1,1,1), device=images.device) * (1. - self.epsilon_t) + self.epsilon_t
         #antithetic sampling
-        t = torch.rand(size=(b // 2 + b%2, 1, *len(d)*[1,])) * (1. - self.epsilon_t) + self.epsilon_t
+        t = torch.rand(size=(b // 2 + b%2, 1, *len(d)*[1,]), device=images.device) * (1. - self.epsilon_t) + self.epsilon_t
         t = torch.cat([t, 1 - t + self.epsilon_t ], dim=0)[:b]
-        z = torch.randn_like(images)
+        z = torch.randn_like(images, device=images.device)
         mean, std = net.SDE.marginal_prob(x=images, t=t)
         perturbed_data = mean + std * z
         x = torch.cat([perturbed_data, *conditionals], dim = 1)

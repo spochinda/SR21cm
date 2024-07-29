@@ -789,7 +789,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
             print("[{0}]: Epoch {1} in {2:.2f}s | ".format(str(device), len(netG.loss), time.time()-start_time) +
-                  "loss: {0:.3f}, mean(loss[-10:]): {1:.3f}, loss min: {2:.3f}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
+                  "loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
                   "learning rate: {0:.3e}".format(netG.optG.param_groups[0]['lr']), flush=True)
 
         if netG.scheduler is not False:
