@@ -788,10 +788,9 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
-            print("[{0}]: Epoch {1} in {2:.2f}s | loss: {3:.3f}, mean(loss[-10:]): {4:.3f}, loss min: {5:.3f}, \
-                  learning rate: {6:.3e}".format(str(device), len(netG.loss), time.time()-start_time, 
-                                                 avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(),
-                                                 torch.min(torch.tensor(netG.loss)).item(), netG.optG.param_groups[0]['lr']), flush=True)
+            print("[{0}]: Epoch {1} in {2:.2f}s | ".format(str(device), len(netG.loss), time.time()-start_time) +
+                  "loss: {0:.3f}, mean(loss[-10:]): {1:.3f}, loss min: {2:.3f}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
+                  "learning rate: {0:.3e}".format(netG.optG.param_groups[0]['lr']), flush=True)
 
         if netG.scheduler is not False:
             netG.scheduler.step()
@@ -853,7 +852,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         print(f"[{device}] Not saving... validation time={validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} larger than minimum={loss_validation_min**0.5:.3f}. Not saved={not_saved}", flush=True)
 
         #abort if last save was more than n validation tests ago
-        if (not_saved>=20) or (len(netG.loss) == total_epochs-1):
+        if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
             if rank==0:
                 print("No improvement in 20 validation tests. Saving test data...", flush=True)
             
@@ -899,9 +898,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Add the optional arguments
-    parser.add_argument("--nmodels", type=int, default=56, help="nmodels")
-    parser.add_argument("--channels", type=int, default=8, help="channels")
-    parser.add_argument("--id", type=int, default=1, help="id")
+    parser.add_argument("--channels", type=int, default=4, help="channels")
+    parser.add_argument("--nmodels", type=int, default=28, help="nmodels")
+    parser.add_argument("--id", type=int, default=3, help="id")
 
     # Parse the command-line arguments
     args = parser.parse_args()

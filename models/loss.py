@@ -7,14 +7,11 @@ class VPLoss:
         self.epsilon_t = epsilon_t
 
     def __call__(self, net, images, conditionals, labels, augment_pipe=None):
-        #with torch.autograd.profiler.record_function("## data prep in loss ##"):
-        #rnd_uniform = torch.rand([images.shape[0], 1, 1, 1, 1], device=images.device)
-        #t = 1 + rnd_uniform * (self.epsilon_t - 1)
-        #print("T21 stats: ", torch.mean(images, dim=(1,2,3,4), keepdim=False), torch.std(images, dim=(1,2,3,4), keepdim=False),
-        #      "\ndelta stats: ", torch.mean(conditionals[0], dim=(1,2,3,4), keepdim=False), torch.std(conditionals[0], dim=(1,2,3,4), keepdim=False),
-        #      "\nvbv stats: ", torch.mean(conditionals[1], dim=(1,2,3,4), keepdim=False), torch.std(conditionals[1], dim=(1,2,3,4), keepdim=False),
-        #      "\nT21_lr stats:", torch.mean(conditionals[2], dim=(1,2,3,4), keepdim=False), torch.std(conditionals[2], dim=(1,2,3,4), keepdim=False))
-        t = torch.rand(size=(images.shape[0],1,1,1,1), device=images.device) * (1. - self.epsilon_t) + self.epsilon_t
+        b,c,*d = images.shape
+        #t = torch.rand(size=(images.shape[0],1,1,1,1), device=images.device) * (1. - self.epsilon_t) + self.epsilon_t
+        #antithetic sampling
+        t = torch.rand(size=(b // 2 + b%2, 1, *len(d)*[1,])) * (1. - self.epsilon_t) + self.epsilon_t
+        t = torch.cat([t, 1 - t + self.epsilon_t ], dim=0)[:b]
         z = torch.randn_like(images)
         mean, std = net.SDE.marginal_prob(x=images, t=t)
         perturbed_data = mean + std * z
@@ -23,8 +20,7 @@ class VPLoss:
         score = -score / std #from wrapper get_score_fn
         
         loss = torch.square(score * std + z)
-        #loss = torch.square(std * (score + (perturbed_data - images) / std**2) )
-        
+        loss = torch.sum(loss, dim=(1,2,3,4))
         loss = torch.mean(loss)
         return loss
     
