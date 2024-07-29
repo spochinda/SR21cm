@@ -21,6 +21,7 @@ import torch.utils
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
 
+import datetime
 import time
 import sys
 import os
@@ -753,9 +754,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         with open('out.txt', 'w') as f:
             print(netG.model, file=f)
 
-    if (str(device)=="cuda:0") and memory_profiling:
-        torch.cuda.memory._record_memory_history()
-        #prof.step()
+
     
     #test 512 boxes forward pass through model to see if we get OOM
     if False:#multi_gpu:
@@ -776,8 +775,16 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             with open('out.txt', 'a') as f:
                 print(torch.cuda.memory_summary(device=device), file=f)
 
+    if (str(device)=="cuda:0") and memory_profiling:
+        torch.cuda.memory._record_memory_history()
+        #prof.step()
+    if (str(device)=="cuda:0") or (str(device)=="cpu"):
+        current_time = datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        print(f"[{str(device)}] Starting training at {current_time}...", flush=True)
 
     not_saved = 0
+    break_num = 0
+    start_time_training = time.time()
     for e in range(total_epochs):        
         
         if (str(device)=="cuda:0") or (str(device)=="cpu"):
@@ -852,10 +859,13 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         print(f"[{device}] Not saving... validation time={validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} larger than minimum={loss_validation_min**0.5:.3f}. Not saved={not_saved}", flush=True)
 
         #abort if last save was more than n validation tests ago
-        if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
+        #if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
+        #    if rank==0:
+        #        print("No improvement in 20 validation tests. Saving test data...", flush=True)
+        if (time.time()-start_time_training > 12*60*60) and (break_num==0):
+            break_num = break_num + 1
             if rank==0:
-                print("No improvement in 20 validation tests. Saving test data...", flush=True)
-            
+                print("12 hours passed. Saving test data...", flush=True)
             netG.load_network(fn+".pth")
 
             #MSE_save, tensor_dict = save_test_data(netG=netG, test_dataloader=validation_dataloader, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen", cut_factor=2, device=device)
@@ -872,15 +882,17 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             #plot_hist(T21_1=tensor_dict["T21_pred"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+"hist_validation_after_validation_during.png", label="mean validation_after - during") #cant do this when I change to test_dataloader
             
             if rank==0:
-                print(f"Test data saved RMSE={loss_validation**0.5:.3f}. Now Aborting...", flush=True)
+                current_time = datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+                print(f"[{str(device)}] Test data saved RMSE={loss_validation**0.5:.3f}.", flush=True)
+                print(f"[{str(device)}] Time is {current_time}. Now aborting (disabled)...", flush=True)
                 #try:
                 #    print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
                 #    print("Loaded model identical to saved model: ", saved_network_str==netG.model.module.state_dict().__str__(), flush=True)
                 #except Exception as e:
                 #    print(e, flush=True)
                 
-            torch.distributed.barrier()
-            break
+            #torch.distributed.barrier()
+            #break
 
     
     if (str(device)=="cuda:0") and memory_profiling:
