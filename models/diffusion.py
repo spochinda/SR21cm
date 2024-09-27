@@ -277,7 +277,7 @@ class GaussianDiffusion(nn.Module):
                     f = path
                     )
         else:
-            if str(self.device) == "cuda:0":
+            if self.rank == 0:
                 print("Saving model!", flush=True)
                 torch.save(
                     obj = dict(
@@ -294,7 +294,8 @@ class GaussianDiffusion(nn.Module):
                         )
 
     def load_network(self, path):
-        print("Loading model!", flush=True)
+        if self.rank==0:
+            print("Loading model!", flush=True)
         loaded_state = torch.load(path, map_location=self.device)
         self.network_opt = loaded_state['network_opt']
         self.model = self.network(**self.network_opt)
@@ -306,13 +307,15 @@ class GaussianDiffusion(nn.Module):
         try:
             self.scheduler.load_state_dict(loaded_state['scheduler'])
         except Exception as e:
-            print(e, flush=True)
-            print("Failed to load scheduler.", flush=True)
+            if self.rank==0:
+                print(e, flush=True)
+                print("Failed to load scheduler.", flush=True)
         try:
             self.ema.load_state_dict(loaded_state['ema'])
         except Exception as e:
-            print(e, flush=True)
-            print("Failed to load EMA.", flush=True)
+            if self.rank==0:
+                print(e, flush=True)
+                print("Failed to load EMA.", flush=True)
         self.loss = loaded_state['loss']
         try:
             self.loss_validation = loaded_state['loss_validation']

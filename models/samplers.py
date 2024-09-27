@@ -3,6 +3,7 @@
 import torch
 import numpy as np
 from tqdm import tqdm
+from contextlib import nullcontext
 
 from scipy import integrate #for ode solver
 
@@ -19,6 +20,7 @@ class Sampler():
                                num_steps=1000, 
                                #device='cuda', 
                                eps=1e-3,
+                               use_amp=False,
                                clip_denoised=True,
                                verbose=False):
 
@@ -38,15 +40,15 @@ class Sampler():
         step_size = time_steps[0] - time_steps[1]
 
         x = noise #* std
-        x_sequence = [x]
+        #x_sequence on CPU
+        x_sequence = torch.empty_like(x, device='cpu')
+        #[x.detach().cpu()]
         
         
         #x_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(x_lr) #only for SongUNet
-        
-        
-        
-        for time_step in tqdm(time_steps, desc='sampling loop time step', disable = not verbose):      
-
+                
+        for i, time_step in enumerate(tqdm(time_steps, desc='sampling loop time step', disable=not verbose)):
+            
             batch_time_step = torch.tensor(b*[time_step], device=x_lr.device).view(b,*[1]*len(d)) #torch.ones(batch_size) * time_step
             #f, g = netG.SDE.sde(x=x,t=batch_time_step) #drift=f diffusion=g
             
@@ -57,7 +59,9 @@ class Sampler():
             #try:
             #if str(x.device) == "cuda:0":
             #    print(torch.cuda.memory_summary())
-            with torch.no_grad():
+            #with torch.cuda.amp.autocast():
+            #if use_amp
+            with torch.cuda.amp.autocast() if use_amp else nullcontext():
                 score = netG.model(x=X, noise_labels=batch_time_step.flatten(), class_labels=class_labels, augment_labels=None) #999 from wrapper get_score_fn
             std = netG.SDE.marginal_prob(x=torch.zeros_like(x), t=batch_time_step)[1] #from wrapper get_score_fn
             score = -score / std #from wrapper get_score_fn
@@ -68,18 +72,28 @@ class Sampler():
             
             f, g = netG.SDE.rsde(x=x, t=batch_time_step, score=score, probability_flow=False)
             
-            #x_mean = x - (f - g**2 * score) * step_size #double check signs
             x_mean = x - f * step_size #double check signs
-
-            #x = x_mean + g * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
             x = x_mean + g * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
+            
+            #x = x - f * step_size + g * torch.sqrt(step_size) * torch.randn_like(x) #double check signs
 
-            x_sequence.append(x)
-        #x_sequence.append(x_mean) # Do not include any noise in the last sampling step.
-        x_sequence = torch.cat(x_sequence, dim=1)
+            x_sequence = torch.cat([x_sequence, x.detach().cpu()], dim=1)
+            #x_sequence.append(x.detach().cpu())
+            if False:#torch.cuda.current_device() == 0:
+                #memory summary
+                #print(torch.cuda.memory_summary())
+                #peak memory in MiB
+                print(f"{torch.cuda.max_memory_allocated() / 1024**2:.2f} MiB", flush=True)
+                print(f"Iteration {i} out of {num_steps}. {100*i/num_steps:.1f}% completed.", flush=True)
+
+            del batch_time_step, X, score, std, f, g, x_mean
+            torch.cuda.empty_cache()
         
-        if clip_denoised:
-            x_sequence[:,-1] = x_sequence[:,-1].clamp_(-1,1)
+        #x_sequence.append(x_mean) # Do not include any noise in the last sampling step.
+        #x_sequence = torch.cat(x_sequence, dim=1)
+        
+        #if clip_denoised:
+            #x_sequence[:,-1] = x_sequence[:,-1].clamp_(-1,1)
         
         return x_sequence
     

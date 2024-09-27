@@ -1,10 +1,12 @@
 import torch
+from contextlib import nullcontext
 
 class VPLoss:
-    def __init__(self, beta_max=20., beta_min=0.1, epsilon_t=1e-5):
+    def __init__(self, beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False):
         self.beta_max = beta_max
         self.beta_min = beta_min
         self.epsilon_t = epsilon_t
+        self.use_amp = use_amp
 
     def __call__(self, net, images, conditionals, labels, augment_pipe=None):
         b,c,*d = images.shape
@@ -16,12 +18,13 @@ class VPLoss:
         mean, std = net.SDE.marginal_prob(x=images, t=t)
         perturbed_data = mean + std * z
         x = torch.cat([perturbed_data, *conditionals], dim = 1)
-        score = net.model(x=x, noise_labels=t.flatten(), class_labels=labels, augment_labels=None) # 999 from wrapper get_score_fn
+        with torch.cuda.amp.autocast() if self.use_amp else nullcontext():
+            score = net.model(x=x, noise_labels=t.flatten(), class_labels=labels, augment_labels=None) # 999 from wrapper get_score_fn
         score = -score / std #from wrapper get_score_fn
         
         loss = torch.square(score * std + z)
         loss = torch.sum(loss, dim=(1,2,3,4))
-        loss = torch.mean(loss)
+        loss = torch.mean(loss) * 0.5
         return loss
     
 

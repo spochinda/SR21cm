@@ -309,7 +309,7 @@ if __name__ == "__main__":
     if multi_gpu:
         print("Spawning processes", flush=True)#100,300,500,1000
         start_time = time.time()
-        mp.spawn(sample_steps, args=(1, [100], 2, False, True, multi_gpu), nprocs=world_size) #3.5 hrs [10, 20, 30, 40, 60, 100, 300, 600, 1000]
+        mp.spawn(sample_steps, args=(1, [10,20,30,40,60,300,600,1000], 2, False, True, multi_gpu), nprocs=world_size) #3.5 hrs [10, 20, 30, 40, 60, 100, 300, 600, 1000]
         #mp.spawn(sample_steps, args=(1, [1e-5, ], i, True, multi_gpu), nprocs=world_size)
         print("Time taken: {0:.2f}".format(time.time()-start_time), flush=True)
     else:
