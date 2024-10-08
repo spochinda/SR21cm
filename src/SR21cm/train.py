@@ -1,17 +1,18 @@
 #import contextlib
 import torch
-import socket
-from datetime import datetime, timedelta
-
-import torch 
 import torch.distributed
 import torch.utils
 
-from utils import *
-from diffusion import *
-from model import *
-from model_edm import SongUNet
-from loss import *
+import numpy as np 
+
+import socket
+from datetime import datetime, timedelta
+
+from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, plot_sigmas, sample_model_v3
+from .diffusion import GaussianDiffusion
+#from model import *
+from .model_edm import SongUNet
+from .loss import VPLoss
 
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
@@ -26,6 +27,7 @@ import time
 import sys
 import os
 import psutil  # Import psutil
+from tqdm import tqdm
 
 import argparse
 
@@ -365,7 +367,7 @@ def save_test_data(netG, test_dataloader, norm_factor = 3., path="", cut_factor=
         vbv, vbv_mean, vbv_std = normalize(vbv, mode="standard", factor=norm_factor)
 
         sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std)
-        sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None) #(2**(cut_factor-1))**3
+        sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=4, shuffle=False, sampler = None)
 
         for j,(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std) in tqdm(enumerate(sub_dataloader), desc="Iterating split batch", total=len(sub_dataloader), disable=False if rank==0 else True):
             if False:#(i==j==0) and (str(device)=='cuda:0'):
@@ -478,7 +480,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
 
     netG.load_network(fn+".pth")
 
-    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
                                     redshifts=[10,], IC_seeds=list(range(72,80)), Npix=256, device=device) #IC_seeds=list(range(0,1)), cut_factor=0, Npix=512, 
     test_data_module.getFullDataset()
@@ -586,21 +588,21 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         print(f"Rank {rank} seed: {seed}", flush=True)
 
 
-    train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
                                     redshifts=[10,], IC_seeds=list(range(0,train_models)), Npix=256, device=device)
-    train_data_module.getFullDataset()
+    #train_data_module.getFullDataset()
     train_sampler = DistributedSampler(dataset=train_data_module, shuffle=True, seed=seed) if multi_gpu else None
     train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=(train_sampler is None), sampler = train_sampler)#, num_workers=world_size*4)#, pin_memory=True) #rule of thumb 4*num_gpus
 
-    validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
                                     redshifts=[10,], IC_seeds=list(range(train_models,72)), Npix=256, device=device)
-    validation_data_module.getFullDataset()
+    #validation_data_module.getFullDataset()
     validation_sampler = DistributedSampler(validation_data_module, shuffle=True, seed=seed) if multi_gpu else None
     validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = validation_sampler)#, num_workers=world_size*4)#, pin_memory=True)
     
-    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
+    test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
                                     redshifts=[10,], IC_seeds=list(range(72,80)), Npix=256, device=device)
     test_sampler = DistributedSampler(test_data_module) if multi_gpu else None
@@ -760,9 +762,9 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Add the optional arguments
-    parser.add_argument("--channels", type=int, default=8, help="channels")
+    parser.add_argument("--channels", type=int, default=4, help="channels")
     parser.add_argument("--nmodels", type=int, default=1, help="nmodels")
-    parser.add_argument("--id", type=int, default=4, help="id")
+    parser.add_argument("--id", type=int, default=4, help="id") #4
 
     # Parse the command-line arguments
     args = parser.parse_args()
@@ -802,7 +804,7 @@ if __name__ == "__main__":
     else:
         print("Not using multi_gpu",flush=True)
         try:
-            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=4, channel_mult=[1,2,4,8,16], cut_factor=cut_factor, norm_factor=1., memory_profiling=False, model_id=4)#2*4)
+            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=4, channel_mult=[1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=4)#2*4)
         except KeyboardInterrupt:
             print('Interrupted', flush=True)
             try:

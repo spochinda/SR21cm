@@ -258,7 +258,7 @@ def augment_dataset(T21, delta, vbv, T21_lr=None, n=8, broadcast=False):
         N = torch.tensor(N, device=T21_i.device)
         if broadcast:
             torch.distributed.broadcast(N, src=0)
-        print(f"Rank {torch.cuda.current_device()} N: {N}", flush=True)
+        #print(f"Rank {torch.cuda.current_device()} N: {N}", flush=True)
         #rotations_x1 = all_rotations(x1)[N]
         #rotations_x2 = all_rotations(x2)[N]
         #rotations_x3 = all_rotations(x3)[N]

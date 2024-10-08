@@ -14,3 +14,4 @@ slurm*
 *.err
 *.out
 *.pickle
+out.txt
