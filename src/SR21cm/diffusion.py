@@ -3,16 +3,13 @@ import torch.utils
 
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from tqdm import tqdm
-
 import torch
 import torch.nn as nn
 from torch.nn import init
 
 from torch_ema import ExponentialMovingAverage
 
-from .utils import beta_schedule
-from .sde_lib import *
+from .sde_lib import VPSDE
 from .samplers import Sampler
 
 
@@ -63,204 +60,13 @@ class GaussianDiffusion(nn.Module):
         #self.noise_schedule_opt = noise_schedule_opt
         #if noise_schedule is not None:
         #    self.set_new_noise_schedule(noise_schedule_opt)
-        self.set_new_noise_schedule()
+        #self.set_new_noise_schedule()
+        self.SDE = VPSDE(beta_min=self.noise_schedule_opt["schedule_opt"]["beta_min"],
+                         beta_max=self.noise_schedule_opt["schedule_opt"]["beta_max"], 
+                         timesteps=self.noise_schedule_opt["schedule_opt"]["timesteps"]
+                         )
 
-    def set_new_noise_schedule(self):
-        if self.noise_schedule_opt["schedule_type"] == "DDPM":
-            self.betas = beta_schedule(**self.noise_schedule_opt).to(self.device)
-
-            self.timesteps = self.noise_schedule_opt["schedule_opt"]["timesteps"]
-            self.alphas = 1. - self.betas
-            self.alphas_cumprod = torch.cumprod(self.alphas, dim=0)
-            self.alphas_cumprod_prev = torch.cat((torch.tensor([1.], dtype=torch.float32, device=self.device), self.alphas_cumprod[:-1]))
-            #self.alphas_cumprod_prev = torch.tensor(np.append(1., self.alphas_cumprod[:-1]), dtype=torch.float32) #need to specify dtype because np.append with 1. is float64
-            #self.betas = beta_schedule(**self.noise_schedule_opt).to(self.device) #self.noise_schedule(**self.noise_schedule_opt).to(self.device)
-            
-            # calculations for posterior q(x_{t-1} | x_t, x_0)
-            self.posterior_variance = self.betas * (1. - self.alphas_cumprod_prev) / (1. - self.alphas_cumprod)
-        
-        elif self.noise_schedule_opt["schedule_type"] == "VPSDE":
-            self.betas = beta_schedule(**self.noise_schedule_opt).to(self.device) #discrete betas 
-            self.SDE = VPSDE(beta_min=self.noise_schedule_opt["schedule_opt"]["beta_min"], 
-                             beta_max=self.noise_schedule_opt["schedule_opt"]["beta_max"], 
-                             timesteps=self.noise_schedule_opt["schedule_opt"]["timesteps"]
-                             )
-        
-        elif self.noise_schedule_opt["schedule_type"] == "EDM":
-            pass
-        else:
-            raise NotImplementedError
-            
-        
-    def predict_start_from_noise(self, x_t, t, noise):
-        b,*d = x_t.shape
-        alpha_cumprod_t = self.alphas_cumprod[t].view(b,*[1]*len(d))
-        x0 = x_t/torch.sqrt(alpha_cumprod_t) - torch.sqrt(1-alpha_cumprod_t) * noise/torch.sqrt(alpha_cumprod_t)
-        return x0
-
-    def q_sample(self, x0, t, noise=None): #forward diffusion
-        #"t and batch number dim should be the same"
-        b,*d = x0.shape
-
-        t=torch.tensor(t).view(b,*[1]*len(d))
-        noise = torch.randn_like(x0, device=self.device) if noise==None else noise
-        
-        if self.noise_schedule_opt["schedule_type"] != "VPSDE":
-            alphas_cumprod_t = self.alphas_cumprod[t]
-            x_t = torch.sqrt(alphas_cumprod_t) * x0 + torch.sqrt(1 - alphas_cumprod_t) * noise
-            return x_t, noise
-        else:
-            #print("VPSDE q_sampling", flush=True)
-            mean, std = self.SDE.marginal_prob(x=x0, t=t)
-            x_t = mean + std * noise #x0 + noise * std[:, None, None, None]
-            return x_t, noise, std
-
-    @torch.no_grad()
-    def p_sample(self, x_t, t, conditionals=None, clip_denoised=True, sampler = "DDPM SR3", ema=False):
-        assert False, "Deprecated use samplers.py instead"
-        b,*d = x_t.shape
-        time = t
-        t=torch.tensor(b*[t]).view(b,*[1]*len(d))
-        
-        alpha_t, alpha_t_cumprod, alpha_t_cumprod_prev, beta_t = self.alphas[t], self.alphas_cumprod[t], self.alphas_cumprod_prev[t], self.betas[t]
-        noise_level = alpha_t_cumprod
-        
-        if sampler=="DDIM": #
-            ddim_alpha_t = self.ddim_alpha[t]
-            ddim_alpha_t_sqrt = self.ddim_alpha_sqrt[t]
-            ddim_alpha_t_prev = self.ddim_alpha_prev[t]
-            ddim_sigma_t = self.ddim_sigma[t]
-            ddim_sqrt_one_minus_alpha_t = self.ddim_sqrt_one_minus_alpha[t]
-            noise_level = ddim_alpha_t
-
-
-
-        posterior_variance_t = self.posterior_variance[t] #torch.sqrt(beta_t)
-        noise = torch.randn_like(x_t) #if t > 0 else torch.zeros_like(x_t)
-
-        if ema:
-            with self.ema.average_parameters():
-                pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
-        else:
-            pred_noise = self.model(x=torch.cat([x_t, *conditionals], dim=1), time=noise_level)
-
-        if sampler=="DDPM Classic":
-            x0 = None
-            posterior_mean_t = (torch.sqrt(1/alpha_t)) * (x_t - beta_t/torch.sqrt(1 - alpha_t_cumprod) * pred_noise) #approach used in most papers   
-            x_t = posterior_mean_t + noise * posterior_variance_t if t.item() > 0 else posterior_mean_t
-            x_t = torch.clamp(x_t, -1.0, 1.0) if clip_denoised else x_t
-
-        elif sampler=="DDPM SR3":
-            x0 = self.predict_start_from_noise(x_t=x_t, t=t, noise=pred_noise) #eq in text above eq 9 rewritten for x0
-            x0 = torch.clamp(x0, -1.0, 1.0) if clip_denoised else x0
-            #beta_t_tilde = beta_t*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)
-            posterior_mean_t = (torch.sqrt(alpha_t_cumprod_prev)*beta_t/(1-alpha_t_cumprod)) * x0 + \
-                (torch.sqrt(alpha_t)*(1-alpha_t_cumprod_prev)/(1-alpha_t_cumprod)) * x_t #mu_tilde_t in the ddpm paper. q_posterior on github. SR3 approach
-            x_t = posterior_mean_t + noise * posterior_variance_t if time > 0 else posterior_mean_t
-
-        elif sampler=="DDIM":
-            x0 = (x_t - ddim_sqrt_one_minus_alpha_t * pred_noise) / (ddim_alpha_t ** 0.5)
-            #x0 = x0.clamp(-1., 1.) if clip_denoised else x0
-            dir_xt = (1. - ddim_alpha_t_prev - ddim_sigma_t ** 2).sqrt() * pred_noise
-            
-            noise = noise*self.temperature
-            x_t = (ddim_alpha_t_prev ** 0.5) * x0 + dir_xt + ddim_sigma_t * noise #x_t-1
-        
-        for i,(x,t_) in enumerate(zip(x_t,t)):
-            if t_==0:
-                noise[i] = torch.zeros_like(x)
-            else:
-                noise[i] = torch.randn_like(x)
-
-        return x_t, noise, pred_noise, x0 #torch.sqrt(beta_t)*noise
-
-    @torch.no_grad()
-    def p_sample_loop(self, conditionals=None, n_save=10, clip_denoised=True, sampler = True, save_slices=False, ema=False, ddim_n_steps = None, verbose = True, device="cpu"):
-        assert False, "Deprecated use samplers.py instead"
-        assert sampler in ["DDPM Classic", "DDPM SR3", "DDIM"], "sampler must be one of ['DDPM Classic', 'DDPM SR3', 'DDIM']"
-        
-        #print("last alpha: ", self.alphas[1000])
-        t_steps = self.timesteps
-        
-        if sampler=="DDIM":
-            assert ddim_n_steps is not None, "ddim_n_steps must be specified (int) for DDIM mean approach"
-
-            #ddim_timesteps = np.asarray(list(range(0, self.timesteps, self.timesteps // ddim_n_steps))) + 1
-            if True:
-                #print("method 1")
-                ddim_timesteps = torch.linspace(0, 1+self.timesteps-(self.timesteps//(ddim_n_steps)), ddim_n_steps, dtype=torch.int) #improved denoising diffusion probabilistic models 
-                self.ddim_alpha = self.alphas_cumprod[ddim_timesteps]
-                self.ddim_alpha_prev = torch.cat([self.alphas_cumprod[0:1], self.alphas_cumprod[ddim_timesteps[:-1]]])
-            else:
-                #print("method 2")
-                ddim_timesteps = torch.linspace(1, 1+self.timesteps-(self.timesteps//(ddim_n_steps+1))  , ddim_n_steps+1,dtype=int)
-                ddim_timesteps_prev = ddim_timesteps[:-1]
-                ddim_timesteps = ddim_timesteps[1:]
-                self.ddim_alpha = self.alphas_cumprod[ddim_timesteps]
-                self.ddim_alpha_prev = self.alphas_cumprod[ddim_timesteps_prev]
-
-            
-            t_steps = len(ddim_timesteps)
-            
-            ddim_eta = 0.
-            
-            
-            self.ddim_alpha_sqrt = torch.sqrt(self.ddim_alpha)
-            
-
-            self.ddim_sigma = (ddim_eta *
-                        ((1 - self.ddim_alpha_prev) / (1 - self.ddim_alpha) *
-                        (1 - self.ddim_alpha / self.ddim_alpha_prev)) ** .5)
-            self.ddim_sqrt_one_minus_alpha = (1. - self.ddim_alpha) ** .5 
-            self.temperature = 1.
-
-        
-        #print("tsteps nsave: ", t_steps, n_save)
-        self.model.eval()
-        sample_inter = t_steps//n_save if n_save <= t_steps else 1
-        #print("sample inter: {0}, t_steps {1}, n_save {2}".format(sample_inter, t_steps, n_save))
-        b,*d  = conditionals[-1].shape #select the last conditional to get the shape (should be T21_lr because order is delta,vbv,T21_lr)
-        
-        x_t = torch.randn((b,*d), device=device)
-        x_sequence = [x_t] #use channel dimension as time axis
-        x_slices = [x_t[:,:,:,:,d[-1]//2]] if save_slices else []
-        
-        noises = []
-        pred_noises = []
-        x0_preds = []
-        
-        interval = reversed(range(0, t_steps)) #if (sampler=="DDPM Classic") or (sampler=="DDPM SR3") else reversed(range(ddim_n_steps))
-        sampling_timesteps = t_steps #if (sampler=="DDPM Classic") or (sampler=="DDPM SR3") else ddim_n_steps
-
-        assert n_save <= sampling_timesteps, "n_save must be smaller or equal to time steps"
-
-        for t in tqdm(interval, desc='sampling loop time step', total=sampling_timesteps, disable = not verbose):
-            x_t, noise, pred_noise, x0 = self.p_sample(x_t, t, conditionals=conditionals, clip_denoised=clip_denoised, sampler=sampler, ema=ema)
-            if t % sample_inter == 0:
-                noises.append(noise)
-                pred_noises.append(pred_noise)
-                x0_preds.append(x0)
-                x_sequence.append(x_t)
-                
-            if save_slices:
-                x_slices.append(x_t[:,:,:,:,d[-1]//2])
-
-        noises = torch.cat(noises, dim=1)
-        pred_noises = torch.cat(pred_noises, dim=1)
-        x0_preds = torch.cat(x0_preds, dim=1)
-        x_sequence = torch.cat(x_sequence, dim=1)
-        
-        if clip_denoised:
-            x_sequence[:,-1] = x_sequence[:,-1].clamp_(-1,1)
-
-        if save_slices:
-            x_slices = torch.cat(x_slices, dim=1)
-        #if continous:
-        return x_sequence, x_slices, noises, pred_noises, x0_preds
-        #else:
-        #    return x_sequence[:,-1]
     
-        
     def save_network(self, path):
         if not self.multi_gpu:
             torch.save(
@@ -325,96 +131,8 @@ class GaussianDiffusion(nn.Module):
             self.noise_schedule_opt = loaded_state['beta_schedule_opt']
         except:
             self.noise_schedule_opt = loaded_state['noise_schedule_opt'] #changed name to noise_schedule_opt
-        self.set_new_noise_schedule()
+        #self.set_new_noise_schedule()
 
-    def vprecond_forward(self, x, conditionals, sigma, class_labels=None):
-        x = x.to(torch.float32)
-        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1, 1)
-        #class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
-        dtype = torch.float32
-
-        c_skip = 1
-        c_out = -sigma
-        c_in = 1 / (sigma ** 2 + 1).sqrt()
-        c_noise = (self.noise_schedule_opt["schedule_opt"]["timesteps"] - 1) * self.sigma_inv(sigma)
-        
-        F_x = self.model(x = torch.cat([(c_in * x).to(dtype), *conditionals], dim=1), noise_labels = c_noise.flatten(), class_labels=class_labels) #D_yn = net(x=torch.cat([y, *conditionals], dim = 1), noise_labels=sigma.flatten(), class_labels=None, augment_labels=None)
-        assert F_x.dtype == dtype
-        D_x = c_skip * x + c_out * F_x.to(torch.float32)
-
-        return D_x
-    
-    def edmrecond_forward(self, x, conditionals, sigma, class_labels=None):
-        x = x.to(torch.float32)
-        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1, 1)
-        dtype = torch.float32
-
-        c_skip = self.loss_fn.sigma_data ** 2 / (sigma ** 2 + self.loss_fn.sigma_data ** 2)
-        c_out = sigma * self.loss_fn.sigma_data / (sigma ** 2 + self.loss_fn.sigma_data ** 2).sqrt()
-        c_in = 1 / (self.loss_fn.sigma_data ** 2 + sigma ** 2).sqrt()
-        c_noise = sigma.log() / 4
-
-        #F_x = self.model((c_in * x).to(dtype), c_noise.flatten(), class_labels=class_labels)
-        F_x = self.model(x = torch.cat([(c_in * x).to(dtype), *conditionals], dim=1), noise_labels = c_noise.flatten(), class_labels=class_labels)
-        assert F_x.dtype == dtype
-        D_x = c_skip * x + c_out * F_x.to(torch.float32)
-        return D_x
-
-    def sigma(self, t):
-        t = torch.as_tensor(t)
-        beta_d = self.noise_schedule_opt["schedule_opt"]["beta_max"] - self.noise_schedule_opt["schedule_opt"]["beta_min"]
-        beta_min = self.noise_schedule_opt["schedule_opt"]["beta_min"]
-        return ((0.5 * beta_d * (t ** 2) + beta_min * t).exp() - 1).sqrt()
-
-    def sigma_inv(self, sigma):
-        sigma = torch.as_tensor(sigma)
-        beta_d = self.noise_schedule_opt["schedule_opt"]["beta_max"] - self.noise_schedule_opt["schedule_opt"]["beta_min"]
-        beta_min = self.noise_schedule_opt["schedule_opt"]["beta_min"]
-        #print("beta_min: ", beta_min, "beta_d: ", beta_d, "sigma: ", sigma, "sigma ** 2: ", sigma ** 2, "log: ", (1 + sigma ** 2).log(), "sqrt: ", (beta_min ** 2 + 2 * beta_d * (1 + sigma ** 2).log()).sqrt(), "sigma_inv: ", ((beta_min ** 2 + 2 * beta_d * (1 + sigma ** 2).log()).sqrt() - beta_min) / beta_d, flush=True)
-        return ((beta_min ** 2 + 2 * beta_d * (1 + sigma ** 2).log()).sqrt() - beta_min) / beta_d
-
-    def round_sigma(self, sigma):
-        return torch.as_tensor(sigma)
-
-class EDMPrecond(torch.nn.Module):
-    def __init__(self,
-        img_resolution,                     # Image resolution.
-        img_channels,                       # Number of color channels.
-        label_dim       = 0,                # Number of class labels, 0 = unconditional.
-        use_fp16        = False,            # Execute the underlying model at FP16 precision?
-        sigma_min       = 0,                # Minimum supported noise level.
-        sigma_max       = float('inf'),     # Maximum supported noise level.
-        sigma_data      = 0.5,              # Expected standard deviation of the training data.
-        model_type      = 'DhariwalUNet',   # Class name of the underlying model.
-        **model_kwargs,                     # Keyword arguments for the underlying model.
-    ):
-        super().__init__()
-        #self.img_resolution = img_resolution
-        #self.img_channels = img_channels
-        self.label_dim = label_dim
-        self.sigma_min = sigma_min
-        self.sigma_max = sigma_max
-        self.sigma_data = sigma_data
-        self.model = globals()[model_type](img_resolution=img_resolution, in_channels=img_channels, out_channels=img_channels, label_dim=label_dim, **model_kwargs)
-
-    def forward(self, x, sigma, class_labels=None, **model_kwargs):
-        x = x.to(torch.float32)
-        sigma = sigma.to(torch.float32).reshape(-1, 1, 1, 1)
-        class_labels = None if self.label_dim == 0 else torch.zeros([1, self.label_dim], device=x.device) if class_labels is None else class_labels.to(torch.float32).reshape(-1, self.label_dim)
-        dtype = torch.float32
-
-        c_skip = self.sigma_data ** 2 / (sigma ** 2 + self.sigma_data ** 2)
-        c_out = sigma * self.sigma_data / (sigma ** 2 + self.sigma_data ** 2).sqrt()
-        c_in = 1 / (self.sigma_data ** 2 + sigma ** 2).sqrt()
-        c_noise = sigma.log() / 4
-
-        F_x = self.model((c_in * x).to(dtype), c_noise.flatten(), class_labels=class_labels, **model_kwargs)
-        assert F_x.dtype == dtype
-        D_x = c_skip * x + c_out * F_x.to(torch.float32)
-        return D_x
-
-    def round_sigma(self, sigma):
-        return torch.as_tensor(sigma)
     
 def weights_init_orthogonal(m):
     classname = m.__class__.__name__
@@ -444,48 +162,3 @@ def init_weights(net, init_type='orthogonal'):
     #print('Initialization method [{:s}]'.format(init_type))
     if init_type == 'orthogonal':
         net.apply(weights_init_orthogonal)
-
-#def prepare_data(path, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1000,1002)), device="cpu" ):
-#    # Load training data
-#    Data = DataManager(path, redshifts=[redshift,], IC_seeds=IC_seeds)
-#    T21, delta, vbv = Data.load()
-#
-#    # Convert to pytorch
-#    T21 = torch.from_numpy(T21).to(device)
-#    delta = torch.from_numpy(delta).to(device)
-#    vbv = torch.from_numpy(vbv).to(device)
-#    
-#    T21 = T21.permute(0,4,1,2,3) # Convert from 8,128,128,128,1 to 8,1,128,128,128
-#    delta = delta.unsqueeze(1) # Expand delta and vbv dims from 8,128,128,128 to 8,1,128,128,128
-#    vbv = vbv.unsqueeze(1)
-#    T21_lr = torch.nn.functional.interpolate( # Define low resolution input that has been downsampled and upsampled again
-#        torch.nn.functional.interpolate(T21, scale_factor=1/upscale, mode='trilinear'),
-#        scale_factor=upscale, mode='trilinear')
-#
-#    T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
-#    delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
-#    vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-#    T21_lr = get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
-#    
-#    T21, min_max_T21 = normalize(T21)
-#    delta, min_max_delta = normalize(delta)
-#    vbv, min_max_vbv = normalize(vbv)
-#    T21_lr, min_max_T21_lr = normalize(T21_lr)
-#    
-#    return T21, delta, vbv, T21_lr
-
-#def prepare_dataloader(path, batch_size=2*4, upscale=4, cut_factor=2, redshift=10, IC_seeds=list(range(1000,1002)), device="cpu", multi_gpu=False):
-#    ###START load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
-#    
-#    #model_i = "20"
-#    #model_path = path + "/trained_models/diffusion_model_test_{0}.pth".format(model_i)
-#    
-#    T21, delta, vbv, T21_lr = prepare_data(path, upscale=upscale, cut_factor=cut_factor, redshift=redshift, IC_seeds=IC_seeds, device=device)
-#    dataset = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-#    #print("Prepare dataloader dataset shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape)
-#    data = torch.utils.data.DataLoader( dataset, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = DistributedSampler(dataset) if multi_gpu else None) #4
-#    ###END load_train_objs() and prepare_dataloader() pytorch multi-gpu tutorial###
-#    return data
-
-
-        

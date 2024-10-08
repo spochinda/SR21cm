@@ -2,34 +2,23 @@
 import torch
 import torch.distributed
 import torch.utils
-
-import numpy as np 
-
-import socket
-from datetime import datetime, timedelta
-
-from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, plot_sigmas, sample_model_v3
-from .diffusion import GaussianDiffusion
-#from model import *
-from .model_edm import SongUNet
-from .loss import VPLoss
-
-import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
-
-import torch.multiprocessing as mp
-import torch.utils
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
 
-import datetime
-import time
-import sys
+from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, plot_sigmas, sample_model_v3
+from .diffusion import GaussianDiffusion
+from .model_edm import SongUNet
+from .loss import VPLoss
+
+import numpy as np 
+import matplotlib.pyplot as plt
+from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
+
 import os
+import time
 import psutil  # Import psutil
 from tqdm import tqdm
-
-import argparse
+from datetime import datetime
 
 
 def ddp_setup(rank: int, world_size: int):
@@ -56,9 +45,10 @@ def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., sp
     avg_loss = torch.tensor(0.0, device=device)
 
     for i,(T21, delta, vbv, labels) in enumerate(train_dataloader):
-        #data prep time
-        #data_prep_stime = time.time()###
-        labels = None #set labels to None for now (not used)
+        if True:
+            labels = labels
+        else:
+            labels = None #set labels to None for now (not used)
 
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
         delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
@@ -141,156 +131,7 @@ def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., sp
 
     netG.loss.append(avg_loss.item())
     
-    return avg_loss.item()
-
-
-@torch.no_grad()
-def plot_checkpoint(T21, delta, vbv, T21_lr, T21_pred, netG=None, MSE=None, epoch=None, path = None, device="cpu"):
-    #find model_idx with MSE closest to MSE
-    MSE_sample = torch.mean(torch.square(T21_pred - T21),dim=(1,2,3,4), keepdim=False)
-    model_idx = torch.argmin(torch.abs(MSE_sample - MSE)).item()
-    #print("Model_idx: ", model_idx, flush=True)
-
-    k_vals_true, dsq_true  = calculate_power_spectrum(T21, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
-    k_vals_pred, dsq_pred  = calculate_power_spectrum(T21_pred, Lpix=3, kbins=100, dsq = True, method="torch", device=device)
-    
-    #detatch and send to cpu
-    T21 = T21.detach().cpu()
-    T21_lr = T21_lr.detach().cpu()
-    delta = delta.detach().cpu()
-    vbv = vbv.detach().cpu()
-    T21_pred = T21_pred.detach().cpu()
-    #T21_lr_stats = T21_lr_stats.detach().cpu()
-    
-    k_vals_true = k_vals_true.detach().cpu()
-    dsq_true = dsq_true.detach().cpu()
-    k_vals_pred = k_vals_pred.detach().cpu()
-    dsq_pred = dsq_pred.detach().cpu()
-
-    
-    slice_idx = T21.shape[-3]//2
-
-    fig = plt.figure(figsize=(15,15))
-    gs = GS(3, 3, figure=fig,) #height_ratios=[1,1,1.5])
-
-    #row 1 (inputs)
-    ax_delta = fig.add_subplot(gs[0,0])#, wspace = 0.2)
-    ax_vbv = fig.add_subplot(gs[0,1])
-    ax_T21_lr = fig.add_subplot(gs[0,2])
-
-    vmin = torch.amin(delta[model_idx,0,slice_idx]).item()
-    vmax = torch.amax(delta[model_idx,0,slice_idx]).item()
-    ax_delta.imshow(delta[model_idx,0,slice_idx], vmin=vmin, vmax=vmax)
-    ax_delta.set_title("Delta (input)")
-
-    vmin = torch.amin(vbv[model_idx,0,slice_idx]).item()
-    vmax = torch.amax(vbv[model_idx,0,slice_idx]).item()
-    ax_vbv.imshow(vbv[model_idx,0,slice_idx], vmin=vmin, vmax=vmax)
-    ax_vbv.set_title("Vbv (input)")
-    ax_T21_lr.imshow(T21_lr[model_idx,0,slice_idx],)
-    ax_T21_lr.set_title("T21 LR (input)")
-
-    #row 2 (outputs)
-    sgs = SGS(1,4, gs[1,:], width_ratios=[10,10,10,1])
-    #ax_dsq = fig.add_subplot(sgs_dsq[0])
-    
-    ax_T21 = fig.add_subplot(sgs[0])
-    ax_T21_pred = fig.add_subplot(sgs[1])
-    ax_T21_resid = fig.add_subplot(sgs[2])
-    ax_T21_resid_cbar = fig.add_subplot(sgs[3])
-
-    #ax_T21 = fig.add_subplot(gs[1,0])
-    #ax_T21_pred = fig.add_subplot(gs[1,1])
-    #ax_T21_resid = fig.add_subplot(gs[1,2])
-
-    vmin = torch.amin(T21[model_idx,0,slice_idx]).item()
-    vmax = torch.amax(T21[model_idx,0,slice_idx]).item()
-    ax_T21.imshow(T21[model_idx,0,slice_idx], vmin=vmin, vmax=vmax)
-    ax_T21.set_title("T21 HR (Real)")
-    
-    ax_T21_pred.imshow(T21_pred[model_idx,0,slice_idx], vmin=vmin, vmax=vmax)
-    ax_T21_pred.set_title(f"T21 SR (Generated) epoch {len(netG.loss)}")
-
-    T21_resid = T21_pred - T21
-    slice_std  = torch.std(T21_resid[model_idx,0,slice_idx]).item()
-    slice_mean = torch.mean(T21_resid[model_idx,0,slice_idx]).item()
-    ax_T21_resid.imshow(T21_resid[model_idx,0,slice_idx], vmin=slice_mean-3*slice_std, vmax=slice_mean+3*slice_std)
-    ax_T21_resid.set_title("T21 SR - T21 HR")
-
-    cbar = plt.colorbar(ax_T21_resid.imshow(T21_resid[model_idx,0,slice_idx], vmin=slice_mean-3*slice_std, vmax=slice_mean+3*slice_std), cax=ax_T21_resid_cbar, label="Residuals [mK]")
-
-
-    #row 3 (statistics)
-    sgs = SGS(2,3, gs[2,:], height_ratios=[4,1], hspace=0.)
-
-    ax_hist = fig.add_subplot(sgs[0,0])
-    ax_hist_resid = fig.add_subplot(sgs[1,0], sharex=ax_hist)
-    
-    ax_hist_shift = fig.add_subplot(sgs[:,1])
-    
-    ax_dsq = fig.add_subplot(sgs[0,2])
-    ax_dsq_resid = fig.add_subplot(sgs[1,2], sharex=ax_dsq)
-
-
-    
-    max_value = max(torch.amax(T21[model_idx,0,:,:,:]).item(), torch.amax(T21_pred[model_idx,0,:,:,:]).item())
-    min_value = min(torch.amin(T21[model_idx,0,:,:,:]).item(), torch.amin(T21_pred[model_idx,0,:,:,:]).item())
-    bins = np.linspace(min_value, max_value, 100)
-    hist_true, _ = np.histogram(T21[model_idx,0,:,:,:].flatten(), bins=bins)
-    hist_pred, _ = np.histogram(T21_pred[model_idx,0,:,:,:].flatten(), bins=bins)  # Reuse the same bins for consistency
-    hist_true = hist_true / np.sum(hist_true)
-    hist_pred = hist_pred / np.sum(hist_pred)
-    ax_hist.bar(bins[:-1], hist_true, width=bins[1] - bins[0], alpha=0.5, label="T21 HR", )#color='orange')
-    ax_hist.bar(bins[:-1], hist_pred, width=bins[1] - bins[0], alpha=0.5, label="T21 SR", )#color='blue')
-
-    hist_resid = np.abs(hist_true - hist_pred)
-    hist_resid = hist_resid / np.sum(hist_resid)
-    ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="|Residuals|", color='k')
-
-    #ax.bar(bins[:-1], diff, width=bins[1] - bins[0], color='skyblue')
-
-    #ax_hist.hist(T21[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
-    #ax_hist.hist(T21_pred[model_idx,0,:,:,:].flatten(), bins=100, alpha=0.5, label="T21 SR", density=True)
-    ax_hist.set_xlabel("$T_{{21}}$ [mK]")
-    ax_hist.set_ylabel("PDF")
-    ax_hist.legend()
-    ax_hist.set_title(f"Model {model_idx} RMSE={MSE_sample[model_idx].item()**0.5:.3f}mK \n(Sample RMSE={MSE**0.5:.3f}mK)")
-    ax_hist.grid()
-
-    ax_hist_resid.set_xlabel("$T_{{21}}$ [mK]")
-    ax_hist_resid.set_ylabel("|Residuals| [mk]")
-    ax_hist_resid.grid()
-
-
-
-    mean_T_pred = torch.mean(T21_pred, dim=(1,2,3,4), keepdim=False)
-    mean_T_true = torch.mean(T21, dim=(1,2,3,4), keepdim=False)
-    ax_hist_shift.hist((mean_T_pred-mean_T_true).flatten(), bins=100, alpha=0.5, label="mean(Predicted)-mean(True)", density=True)
-    ax_hist_shift.set_xlim(-1,1)
-    ax_hist_shift.set_xlabel("Sample difference in mean [mK]")
-    ax_hist_shift.set_ylabel("PDF")
-    ax_hist_shift.grid()
-
-
-
-
-    ax_dsq.plot(k_vals_true, dsq_true[model_idx,0], label="T21 HR", ls='solid', lw=2)
-    ax_dsq.plot(k_vals_pred, dsq_pred[model_idx,0], label="T21 SR", ls='solid', lw=2)
-    ax_dsq.set_ylabel('$\Delta^2(k)_{{21}}$ [mK$^2$]')
-    #ax_dsq.set_xlabel('$k$ [h/Mpc]')
-    ax_dsq.set_yscale('log')
-    ax_dsq.grid()
-    ax_dsq.legend()
-
-    dsq_resid = torch.abs(dsq_pred[model_idx,0] - dsq_true[model_idx,0])
-    ax_dsq_resid.plot(k_vals_true, dsq_resid, lw=2, color='k')
-    ax_dsq_resid.set_ylabel("|Residuals| [mK$^2$]")
-    ax_dsq_resid.set_xlabel("$k$ [h/Mpc]")
-    ax_dsq_resid.set_yscale('log')
-    ax_dsq_resid.grid()
-
-    plt.savefig(path + netG.model_name + f"_epoch_{len(netG.loss)}.png".format(epoch))
-    plt.close()
+    return avg_loss.item(), labels
 
 @torch.no_grad()
 def plot_input(T21, delta, vbv, T21_lr, path=""):
@@ -438,7 +279,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
 
     device = torch.device(f'cuda:{rank}')
 
-    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
+    path = "/home/sp2053/rds/hpc-work" + "/SR21cm"
 
     
     #model_channels = int(fn.split("channels_")[1].split("_")[0])
@@ -509,7 +350,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
 
 
 ###START main pytorch multi-gpu tutorial###
-def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56, model_channels = 32, channel_mult = [1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=1):
+def train(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56, model_channels = 32, channel_mult = [1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=1):
     #train_models = 56
     #model_channels = 8
     #model_id = 3
@@ -526,13 +367,13 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
     #optimizer and model
-    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
+    path = "/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages" + "/SR21cm"
 
 
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
     #network = UNet
-    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=1, # (for tokens?), augment_dim,
                     model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
@@ -590,14 +431,14 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
     train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
-                                    redshifts=[10,], IC_seeds=list(range(0,train_models)), Npix=256, device=device)
-    #train_data_module.getFullDataset()
+                                    redshifts=list(range(10,21)), IC_seeds=list(range(0,train_models)), Npix=256, device=device)
+    train_data_module.getFullDataset()
     train_sampler = DistributedSampler(dataset=train_data_module, shuffle=True, seed=seed) if multi_gpu else None
     train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=(train_sampler is None), sampler = train_sampler)#, num_workers=world_size*4)#, pin_memory=True) #rule of thumb 4*num_gpus
 
     validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
-                                    redshifts=[10,], IC_seeds=list(range(train_models,72)), Npix=256, device=device)
+                                    redshifts=list(range(10,21)), IC_seeds=list(range(train_models,72)), Npix=256, device=device)
     #validation_data_module.getFullDataset()
     validation_sampler = DistributedSampler(validation_data_module, shuffle=True, seed=seed) if multi_gpu else None
     validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = validation_sampler)#, num_workers=world_size*4)#, pin_memory=True)
@@ -657,7 +498,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         torch.cuda.memory._record_memory_history()
         #prof.step()
     if rank==0:
-        current_time = datetime.datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+        current_time = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
         print(f"[{str(device)}] Starting training at {current_time}...", flush=True)
 
     not_saved = 0
@@ -672,12 +513,14 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                 if multi_gpu:
                     train_sampler.set_epoch(len(netG.loss)) #
 
-                avg_loss = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=True, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
+                avg_loss, labels = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=True, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
 
                 if (str(device)=="cuda:0") or (str(device)=="cpu"):
                     print("[{0}]: Epoch {1} in {2:.2f}s | ".format(str(device), len(netG.loss), time.time()-start_time) +
                         "loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
-                        "learning rate: {0:.3e}".format(netG.optG.param_groups[0]['lr']), flush=True)
+                        "learning rate: {0:.3e}, ".format(netG.optG.param_groups[0]['lr']) +
+                        "redshift: {0}".format(labels[0].item()), #labels is tensor([z])
+                        flush=True)
 
                 if netG.scheduler is not False:
                     netG.scheduler.step()
@@ -696,14 +539,13 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
             elif model_channels==4:
                 validation_check_epoch = 1500
             
-            if len(netG.loss)>=validation_check_epoch:
+            if False:# len(netG.loss)>=validation_check_epoch:
                 if len(netG.loss)==validation_check_epoch:
                     for g in netG.optG.param_groups:
                         g['lr'] = 1e-4
                 
                 if len(netG.loss)%50==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
                     start_time_validation = time.time()
-                    #loss_validation, tensor_dict_validation = sample_model(netG=netG, dataloader=validation_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, augment=1, split_batch = True, sub_batch = 4, n_boxes=1, num_steps=100, device=device, multi_gpu=multi_gpu)
                     #loss_validation, tensor_dict_validation = sample_model_v3(rank, netG=netG, dataloader=test_dataloader, cut_factor=cut_factor, norm_factor = norm_factor, augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, device=device, multi_gpu=multi_gpu)
                     if multi_gpu:
                         validation_dataloader.sampler.set_epoch(len(netG.loss))
@@ -717,7 +559,6 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                             path_plot = os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/"
                             #plot_hist(T21_1=tensor_dict_validation["T21"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+f"hist_true_validation_during_{netG.model_name}.png", label="mean true-validation during")
                             plot_sigmas(**tensor_dict_validation, netG=netG, path = path_plot,  quantiles=[0.16,0.5,0.84]) #[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
-                            #plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)
                             
                             print(f"[{device}] Validation took {validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} smaller than minimum={loss_validation_min**0.5:.3f}", flush=True)
                             try:
@@ -735,6 +576,15 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                         if rank==0:
                             print(f"[{device}] Not saving... validation time={validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} larger than minimum={loss_validation_min**0.5:.3f}. Not saved={not_saved}", flush=True)
 
+            
+            #every 100 epochs after epoch 2000 save network
+            if len(netG.loss) >= 2000 and len(netG.loss)%100==0:
+                if len(netG.loss) == 2000:
+                    for g in netG.optG.param_groups:
+                                g['lr'] = 1e-4
+                netG.save_network(fn+".pth")
+                if rank==0:
+                    print(f"[{device}] Saved network at {fn}.pth", flush=True)
             #abort if last save was more than n validation tests ago
             #if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
             #    if rank==0:
@@ -754,62 +604,4 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
         torch.distributed.barrier()
         destroy_process_group()
 ###END main pytorch multi-gpu tutorial###
-
-
-
-if __name__ == "__main__":
-    # Create an ArgumentParser object
-    parser = argparse.ArgumentParser()
-
-    # Add the optional arguments
-    parser.add_argument("--channels", type=int, default=4, help="channels")
-    parser.add_argument("--nmodels", type=int, default=1, help="nmodels")
-    parser.add_argument("--id", type=int, default=4, help="id") #4
-
-    # Parse the command-line arguments
-    args = parser.parse_args()
-
-    # Access the values of the optional arguments
-    channels = args.channels
-    nmodels = args.nmodels
-    id = args.id
-
-    
-    print("PyTorch version: ", torch.__version__)
-    print("CUDA version: ", torch.version.cuda)
-   
-    world_size = torch.cuda.device_count()
-    multi_gpu = world_size > 1
-
-    
-
-    if multi_gpu:
-        print("Using multi_gpu", flush=True)
-        for i in range(torch.cuda.device_count()):
-            print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-
-        for channel,n_models,id in zip([channels,], [nmodels,], [id,]): #[8,8,4], [56,28,28], [3,2,3,3]
-            print(f"Training with {channel} channels and {n_models} models and {id} id", flush=True)
-            
-            
-            training_time = time.time()
-            cut_factor = 1 #train on 128
-            #mp.spawn(main, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
-            print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
-            print("Sampling...", flush=True)
-            sampling_time = time.time()
-            cut_factor = 0 #sample 256
-            mp.spawn(sample, args=(world_size, n_models, channel, [1,2,4,8,16], cut_factor, 1., id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
-            print(f"Sampling took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
-    else:
-        print("Not using multi_gpu",flush=True)
-        try:
-            main(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=4, channel_mult=[1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=4)#2*4)
-        except KeyboardInterrupt:
-            print('Interrupted', flush=True)
-            try:
-                sys.exit(130)
-            except SystemExit:
-                os._exit(130)
-    
         

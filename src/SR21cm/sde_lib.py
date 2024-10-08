@@ -29,7 +29,6 @@ class VPSDE():
   def sde(self, x, t):
     b,*d  = x.shape
     beta_t = (self.beta_min + t * (self.beta_max - self.beta_min)).view(b,*[1]*len(d)).to(x.device)
-    #print("beta shape", beta_t.shape)
     drift = -0.5 * beta_t * x
     diffusion = torch.sqrt(beta_t)
     return drift, diffusion
@@ -44,7 +43,6 @@ class VPSDE():
     return drift, diffusion
   
   def marginal_prob(self, x, t):
-    #print devices:
     log_mean_coeff = -0.25 * t ** 2 * (self.beta_max - self.beta_min) - 0.5 * t * self.beta_min
     mean = torch.exp(log_mean_coeff) * x
     std = torch.sqrt(1. - torch.exp(2. * log_mean_coeff))
@@ -60,12 +58,12 @@ class VPSDE():
     logps = -N / 2. * np.log(2 * np.pi) - torch.sum(z ** 2, dim=(1, 2, 3)) / 2.
     return logps
 
-  def discretize(self, x, t):
-    """DDPM discretization."""
-    timestep = (t * (self.timesteps - 1) / self.T).long()
-    beta = self.discrete_betas.to(x.device)[timestep]
-    alpha = self.alphas.to(x.device)[timestep]
-    sqrt_beta = torch.sqrt(beta)
-    f = torch.sqrt(alpha)[:, None, None, None, None] * x - x
-    G = sqrt_beta
-    return f, G
+#  def discretize(self, x, t):
+#    """DDPM discretization."""
+#    timestep = (t * (self.timesteps - 1) / self.T).long()
+#    beta = self.discrete_betas.to(x.device)[timestep]
+#    alpha = self.alphas.to(x.device)[timestep]
+#    sqrt_beta = torch.sqrt(beta)
+#    f = torch.sqrt(alpha)[:, None, None, None, None] * x - x
+#    G = sqrt_beta
+#    return f, G

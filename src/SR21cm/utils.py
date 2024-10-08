@@ -1,6 +1,4 @@
 import os
-import time
-import datetime
 import torch
 import numpy as np
 from scipy.io import loadmat
@@ -12,14 +10,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from matplotlib.ticker import LogFormatterExponent
 
-import torch.multiprocessing as mp
-#from model_edm import SongUNet
-#from diffusion import GaussianDiffusion
-import torch.utils
-from torch.utils.data.distributed import DistributedSampler
-from torch.distributed import init_process_group, destroy_process_group
 
 class CustomDataset(torch.utils.data.Dataset):
     def __init__(self, path_T21, path_IC, 
@@ -34,7 +25,13 @@ class CustomDataset(torch.utils.data.Dataset):
         self.Npix = Npix
         
         self.df = self.getDataFrame()
-        
+        try: 
+            if torch.cuda.current_device() == 0:
+                print("Loaded dataframe", flush=True)
+                print(self.df, flush=True)
+        except:
+            pass
+            
         #self.labels = pd.read_csv(annotations_file)
         #self.img_dir = img_dir
 
@@ -519,121 +516,6 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
     plt.savefig(path + netG.model_name + "_quantiles.pdf", bbox_inches='tight')
     plt.close()
 
-@torch.no_grad()
-def sample_model(netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, shared_list=None, device="cpu", multi_gpu=False):
-    assert netG.noise_schedule_opt["schedule_type"] == "VPSDE", "Only VPSDE supported"
-    assert n_boxes > 0 or n_boxes == -1, "n_boxes has to be greater than 0 or -1 for all boxes"
-    assert augment >= 0 or augment <= 24, "augment has to be between 0 and 24"
-
-    #netG.model.eval() #already inside Euler_Maruyama_sampler
-    for i,(T21, delta, vbv, labels) in tqdm(enumerate(dataloader), desc='sampling loop', total=len(dataloader), disable=False if str(device)=="cuda:0" else True):
-        #iterating over 256 cubes (batch should be 1)
-        
-        T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
-        delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
-        vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear') # get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
-        if augment:
-            T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=augment) #support device
-
-        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
-        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
-        
-        T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
-        
-        T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=norm_factor)#, factor=2.)
-        T21, _,_ = normalize(T21, mode="standard", factor=norm_factor, x_mean=T21_lr_mean, x_std=T21_lr_std)#, factor=2.) #####
-        delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)#, factor=2.)
-        vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)#, factor=2.)
-            
-        if split_batch: #split subcube minibatch into smaller mini-batches for memory
-            sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std)
-            sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=sub_batch, shuffle=False, sampler = None) 
-            
-            for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='sampling subloop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
-                if False:#(i==j==0) and (str(device)=='cuda:0'):
-                    print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
-                    plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/plot_input_validation.png")
-
-                #with netG.ema.average_parameters():
-                T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=num_steps, eps=1e-3, clip_denoised=False, verbose=False)
-                
-                T21_pred_j = invert_normalization(T21_pred_j[:,-1:], mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
-                T21 = invert_normalization(T21, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
-
-                MSE_j = torch.mean(torch.square(T21_pred_j[:,-1:] - T21),dim=(1,2,3,4), keepdim=False)
-                if j == 0:
-                    MSE_i = MSE_j
-                else:
-                    MSE_i = torch.cat([MSE_i, MSE_j], dim=0)
-
-                if i==j==0:
-                    T21_i = T21
-                    #delta_i = delta
-                    #vbv_i = vbv
-                    #T21_lr_i = T21_lr
-                    T21_pred_i = T21_pred_j[:,-1:]
-                else:
-                    T21_i = torch.cat([T21_i, T21], dim=0)
-                    #delta_i = torch.cat([delta_i, delta], dim=0)
-                    #vbv_i = torch.cat([vbv_i, vbv], dim=0)
-                    #T21_lr_i = torch.cat([T21_lr_i, T21_lr], dim=0)
-                    T21_pred_i = torch.cat([T21_pred_i, T21_pred_j[:,-1:]], dim=0)
-                #if j == 8:
-                #    break #only do one subbatch for now
-        
-        else:
-            if torch.cuda.current_device() == 0:
-                print("Validation without subbatching, shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape, flush=True)
-            T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=num_steps, eps=1e-3, clip_denoised=False, verbose=False)
-            T21_pred_i = invert_normalization(T21_pred_i[:,-1:], mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
-            T21_i = invert_normalization(T21, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)
-            #delta_i = delta
-            #vbv_i = vbv
-            #T21_lr_i = T21_lr
-            MSE_i = torch.mean(torch.square(T21_pred_i[:,-1:] - T21_i),dim=(1,2,3,4), keepdim=False)
-        
-        if i == 0:
-            MSE = MSE_i
-        else:
-            MSE = torch.cat([MSE, MSE_i], dim=0)
-        
-        if i==n_boxes-1:
-            break #only do n_boxes (-1 or -random number for all)
-    
-    if multi_gpu:
-        MSE_tensor_list = [torch.zeros_like(MSE) for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensor_list=MSE_tensor_list, tensor=MSE)
-        MSE = torch.cat(MSE_tensor_list, dim=0)
-
-        T21_tensor_list = [torch.zeros_like(T21_i) for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensor_list=T21_tensor_list, tensor=T21_i)
-        T21 = torch.cat(T21_tensor_list, dim=0)
-
-        #T21_lr_tensor_list = [torch.zeros_like(T21_lr_i) for _ in range(torch.distributed.get_world_size())]
-        #torch.distributed.all_gather(tensor_list=T21_lr_tensor_list, tensor=T21_lr_i)
-        #T21_lr = torch.cat(T21_lr_tensor_list, dim=0)
-
-        #delta_tensor_list = [torch.zeros_like(delta_i) for _ in range(torch.distributed.get_world_size())]
-        #torch.distributed.all_gather(tensor_list=delta_tensor_list, tensor=delta_i)
-        #delta = torch.cat(delta_tensor_list, dim=0)
-
-        #vbv_tensor_list = [torch.zeros_like(vbv_i) for _ in range(torch.distributed.get_world_size())]
-        #torch.distributed.all_gather(tensor_list=vbv_tensor_list, tensor=vbv_i)
-        #vbv = torch.cat(vbv_tensor_list, dim=0)
-
-        T21_pred_tensor_list = [torch.zeros_like(T21_pred_i) for _ in range(torch.distributed.get_world_size())]
-        torch.distributed.all_gather(tensor_list=T21_pred_tensor_list, tensor=T21_pred_i)
-        T21_pred = torch.cat(T21_pred_tensor_list, dim=0)
-    
-    
-    MSE = torch.mean(MSE).item()
-
-    if str(device)=="cuda:0":
-        print(f"Validation RMSE: {MSE**0.5:.4f}", flush=True)
-
-    return MSE, dict(T21=T21, #delta=delta, vbv=vbv, T21_lr=T21_lr, 
-                     T21_pred=T21_pred)
 
 @torch.no_grad()
 def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, 
@@ -722,87 +604,3 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
     
     return MSE, dict(T21=T21, T21_pred=T21_pred)
     
-if False:
-    def main(rank, shared_dict, world_size=4, multi_gpu=False):
-        from diffusion import GaussianDiffusion
-
-        ddp_setup(rank, world_size=world_size)
-
-        device = torch.device(f'cuda:{rank}')
-
-        path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
-        fn = path + "/trained_models/model_6/DDPMpp_standard_channels_4_mult_1-2-4-8-16_tts_70_VPSDE_5_normfactor1"
-        
-        
-        model_channels = int(fn.split("channels_")[1].split("_")[0])
-        channel_mult = [int(i) for i in fn.split("mult_")[1].split("_")[0].split("-")]
-        network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                        model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
-                        embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
-                        )
-        network = SongUNet
-        noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
-
-        netG = GaussianDiffusion(
-                network=network,
-                network_opt=network_opt,
-                noise_schedule_opt=noise_schedule_opt,
-                loss_fn = None,
-                learning_rate=1e-3,
-                scheduler=False,
-                mp=True,
-                rank=rank,
-            )
-        
-        netG.model_name = fn.split("/")[-1]
-        netG.load_network(fn+".pth")
-
-        test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-        #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
-                                        redshifts=[10,], IC_seeds=list(range(72,80)), cut_factor=0, device=device)
-        test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=1, shuffle=False if multi_gpu else True,
-                                                        sampler = DistributedSampler(test_data_module) if multi_gpu else None)
-        #augment?
-        for i in range(2):
-            print(f"Starting sampling {i}...", flush=True)
-            sample_model_v3(rank=rank, netG=netG, dataloader=test_dataloader, cut_factor=1, norm_factor = 1., augment=1, split_batch = True, sub_batch = 4, n_boxes = -1, num_steps=10, 
-                            shared_dict=shared_dict, device=device, multi_gpu=multi_gpu)
-        destroy_process_group()
-
-    def ddp_setup(rank: int, world_size: int):
-        try:
-            os.environ["MASTER_ADDR"] #check if master address exists
-            print("Found master address: ", os.environ["MASTER_ADDR"])
-        except:
-            print("Did not find master address variable. Setting manually...")
-            os.environ["MASTER_ADDR"] = "localhost"
-
-        
-        os.environ["MASTER_PORT"] = "2594"#"12355" 
-        torch.cuda.set_device(rank)
-        init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus? or nccl
-
-if False:#__name__ == "__main__":
-    if False:
-        world_size = torch.cuda.device_count()
-        multi_gpu = world_size > 1
-        mp.spawn(main, args=(world_size,multi_gpu), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
-    else:
-        multi_gpu = False
-        device="cpu"
-        test_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/",
-                                        #test_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",
-                                        redshifts=[10,], IC_seeds=list(range(0,8)), cut_factor=0, Npix=512, device=device)
-        test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=1, shuffle=False if multi_gpu else True,
-                                                      sampler = DistributedSampler(test_data_module) if multi_gpu else None)
-        print(test_data_module.df)
-        print("Finished loading data")
-        
-        
-
-if __name__ == "__main__":
-    train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/IC_cubes/", 
-                                      redshifts=[10,], IC_seeds=list(range(0,10)), cut_factor=0, Npix=256, device='cpu')
-    dataset = train_data_module.getFullDataset()
-    print(dataset.tensors[0].shape)
-

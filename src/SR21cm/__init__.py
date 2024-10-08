@@ -1,3 +1,6 @@
 from importlib.metadata import version
 
-#__version__ = version("SR21cm")
+try: 
+    __version__ = version("SR21cm")
+except:
+    pass
