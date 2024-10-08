@@ -1,5 +1,5 @@
+torch==2.2.0
 numpy
 scipy
 matplotlib
 tqdm
-torch

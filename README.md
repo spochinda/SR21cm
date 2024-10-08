@@ -1,4 +1,4 @@
-# 21cmGen
+# SR21cm
 Generative models to produce super-resolved 21-cm brightness temperature simulations
 
 ## Setting up on Tursa
