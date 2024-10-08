@@ -49,7 +49,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
     #optimizer and model
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
 
 
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
@@ -237,7 +237,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                     if loss_validation < loss_validation_min:
                         if rank==0:
                             
-                            path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_8/"
+                            path_plot = os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/"
                             #plot_hist(T21_1=tensor_dict_validation["T21"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+f"hist_true_validation_during_{netG.model_name}.png", label="mean true-validation during")
                             plot_sigmas(**tensor_dict_validation, netG=netG, path = path_plot,  quantiles=[0.16,0.5,0.84]) #[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
                             #plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)

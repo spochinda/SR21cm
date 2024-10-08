@@ -372,7 +372,7 @@ def save_test_data(netG, test_dataloader, norm_factor = 3., path="", cut_factor=
         for j,(T21, delta, vbv, T21_lr, T21_lr_orig, T21_lr_mean, T21_lr_std, delta_mean, delta_std, vbv_mean, vbv_std) in tqdm(enumerate(sub_dataloader), desc="Iterating split batch", total=len(sub_dataloader), disable=False if rank==0 else True):
             if False:#(i==j==0) and (str(device)=='cuda:0'):
                 print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
-                plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_8/plot_input_save_test.png")
+                plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/plot_input_save_test.png")
             with netG.ema.average_parameters():
                 T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=100, eps=1e-3, clip_denoised=False, verbose=False)
 
@@ -438,7 +438,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
 
     device = torch.device(f'cuda:{rank}')
 
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
 
     
     #model_channels = int(fn.split("channels_")[1].split("_")[0])
@@ -491,7 +491,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
     for steps in [100,]: #300,80,60,40,30,20,10
         loss_test, tensor_dict = sample_model_v3(rank, netG=netG, dataloader=test_dataloader, cut_factor=cut_factor, norm_factor = norm_factor, augment=24, split_batch = True, sub_batch = 4, n_boxes = -1, num_steps=steps, device=device, multi_gpu=multi_gpu) #augment=24
         torch.save(obj=tensor_dict,
-                f=os.getcwd().split("/21cmGen")[0] + f"/21cmGen/analysis/model_6/save_data_tensors_{netG.model_name}_steps_{steps}_Npix256.pth")
+                f=os.getcwd().split("/SR21cm")[0] + f"/SR21cm/analysis/model_6/save_data_tensors_{netG.model_name}_steps_{steps}_Npix256.pth")
         if rank==0:
             print(f"Test data loss={loss_test**0.5:.4f} ", flush=True)
             
@@ -526,7 +526,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
 
 
     #optimizer and model
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
 
 
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
@@ -714,7 +714,7 @@ def main(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56
                     if loss_validation < loss_validation_min:
                         if rank==0:
                             
-                            path_plot = os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_8/"
+                            path_plot = os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/"
                             #plot_hist(T21_1=tensor_dict_validation["T21"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+f"hist_true_validation_during_{netG.model_name}.png", label="mean true-validation during")
                             plot_sigmas(**tensor_dict_validation, netG=netG, path = path_plot,  quantiles=[0.16,0.5,0.84]) #[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
                             #plot_checkpoint(**tensor_dict, netG=netG, MSE=loss_validation, epoch=len(netG.loss), path = path_plot, device=device)

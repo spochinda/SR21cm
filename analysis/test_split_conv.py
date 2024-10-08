@@ -35,7 +35,7 @@ def main(rank, world_size=0,mp=True):
     #torch.distributed.barrier()
 
     
-    #path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    #path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
     
     network = SongUNet
 

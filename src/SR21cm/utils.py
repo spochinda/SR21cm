@@ -553,7 +553,7 @@ def sample_model(netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, sp
             for j,(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std) in tqdm(enumerate(sub_dataloader), desc='sampling subloop', total=len(sub_dataloader), disable=False if str(device)=="cuda:0" else True):
                 if False:#(i==j==0) and (str(device)=='cuda:0'):
                     print("mean and stds: ", T21_lr_mean.flatten(), T21_lr_std.flatten(), flush=True)
-                    plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/21cmGen")[0] + "/21cmGen/plots/vary_channels_nmodels_8/plot_input_validation.png")
+                    plot_input(T21=T21, delta=delta, vbv=vbv, T21_lr=T21_lr, path=os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/plot_input_validation.png")
 
                 #with netG.ema.average_parameters():
                 T21_pred_j = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=num_steps, eps=1e-3, clip_denoised=False, verbose=False)
@@ -730,7 +730,7 @@ if False:
 
         device = torch.device(f'cuda:{rank}')
 
-        path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+        path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
         fn = path + "/trained_models/model_6/DDPMpp_standard_channels_4_mult_1-2-4-8-16_tts_70_VPSDE_5_normfactor1"
         
         

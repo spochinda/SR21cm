@@ -36,7 +36,7 @@ def sample_steps(rank, repeats=10, steps=[10,20,40,], cut_factor=0, ode_sampling
     else:
         device = "cpu"
 
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
     model_pth = path + "/trained_models/model_1/DDPMpp_standard_channels_32_tts_70_VPSDE_1_fac33.pth"
     fn = path + "/analysis/model_1/" + model_pth.split("/")[-1].split(".")[0] + "_sample_steps.pth"
 

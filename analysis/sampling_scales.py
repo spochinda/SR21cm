@@ -37,7 +37,7 @@ def sample_scales(rank, world_size, cut_factor=2, split_batch = True, sub_batch=
         device = "cpu"
         print("Multi GPU: {0}, device: {1}".format(multi_gpu,device))
     
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
 
 
     channels = 8#int(model_path.split("channels_")[1].split("_")[0])
@@ -102,7 +102,7 @@ if __name__ == "__main__":
     world_size = torch.cuda.device_count()
     multi_gpu = world_size > 1
 
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
     model = "DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_2_normfactor1.pth"
 
     cut_factors = [0,]

@@ -35,7 +35,7 @@ def sample_error(rank, ema=False, multi_gpu=False):
     else:
         device = "cpu"
 
-    path = os.getcwd().split("/21cmGen")[0] + "/21cmGen"
+    path = os.getcwd().split("/SR21cm")[0] + "/SR21cm"
     model_root = path + "/trained_models/model_13/"
     #model_files = [file for file in os.listdir(model_root) if file.endswith("_1.pth")][9:]
     model_files = ["DDPMpp_standard_channels_32_tts_70_VPSDE_2.pth",]
