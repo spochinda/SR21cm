@@ -393,6 +393,12 @@ def invert_normalization(x, mode="standard", **kwargs):
 
 @torch.no_grad()
 def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 0.84], **kwargs):
+    if True:
+        plt.rcParams.update({'font.size': 14,
+                             "text.usetex": True,
+                             "font.family": "serif",
+                             "font.serif": "cm",
+                             })
     T21 = T21.detach().cpu()
     T21_pred = T21_pred.detach().cpu()
 
@@ -432,7 +438,7 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         vmin = -1 #resid_mean-2*resid_std
         vmax = 1 #resid_mean+2*resid_std
         img = ax_resid.imshow(resid, vmin=vmin, vmax=vmax, cmap='viridis')
-        cbar = fig.colorbar(img, cax=cax, orientation='vertical', label="Residuals [mK]" if i==0 else None)
+        cbar = fig.colorbar(img, cax=cax, orientation='vertical', label="$|\mathrm{{Residuals}}|$" if i==0 else None)
         #cbar.set_label(label="Residuals [mK]", loc='left')
         cbar.ax.yaxis.set_label_position('left')
         cax.yaxis.set_ticks_position('left')
@@ -447,14 +453,14 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         hist_min = min(T21[idx,0].min().item(), T21_pred[idx,0].min().item())
         hist_max = max(T21[idx,0].max().item(), T21_pred[idx,0].max().item())
         bins = np.linspace(hist_min, hist_max, 100)
-        hist_true, _ = np.histogram(T21[idx,0,:,:,:].flatten(), bins=bins)
-        hist_pred, _ = np.histogram(T21_pred[idx,0,:,:,:].flatten(), bins=bins)  # Reuse the same bins for consistency
+        hist_true, _ = np.histogram(T21[idx,0,:,:,:].flatten(), bins=bins, density=True)
+        hist_pred, _ = np.histogram(T21_pred[idx,0,:,:,:].flatten(), bins=bins, density=True)  # Reuse the same bins for consistency
         #hist_true = hist_true / np.sum(hist_true)
         #hist_pred = hist_pred / np.sum(hist_pred)
         ax_hist.bar(bins[:-1], hist_true, width=bins[1] - bins[0], alpha=0.5, label="T21 HR", )#color='orange')
         ax_hist.bar(bins[:-1], hist_pred, width=bins[1] - bins[0], alpha=0.5, label="T21 SR", )#color='blue')
         if i==0:
-            ax_hist.set_ylabel("Counts")
+            ax_hist.set_ylabel("PDF")
         ax_hist.legend()
         ax_hist.set_title(f"$\mathrm{{RMSE}}_{{Q={quantile:.3f}}}={q:.3f}$")
         #logfmt = LogFormatterExponent(base=10.0, labelOnlyBase=False)
@@ -463,11 +469,13 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         #ax_hist.get_yaxis().get_offset_text().set_position((-0.1,0.9))
         hist_resid = np.abs(hist_true - hist_pred)
         #hist_resid = hist_resid / np.sum(hist_resid)
-        ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="|Residuals|", color='k')
+        ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="$|\mathrm{{Residuals}}|$", color='k')
         ax_hist_resid.legend()
         ax_hist_resid.set_xlabel("T21 [mK]")
         #ax_hist_resid.yaxis.set_major_formatter(logfmt)
         ax_hist_resid.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
+        if i==0:
+            ax_hist_resid.set_ylabel("$|\mathrm{{Residuals}}|$")
         fig.canvas.draw()
         default_text = ax_hist_resid.get_yaxis().get_offset_text().get_text()
         default_position = ax_hist_resid.get_yaxis().get_offset_text().get_position()
@@ -480,6 +488,7 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_hist_resid.get_yaxis().get_offset_text().set_visible(False)
         #manually set offset text slightly below default position
         ax_hist_resid.text(0, 0.95, default_text, transform=ax_hist_resid.transAxes, ha='left', va='top')
+        fig.align_ylabels([ax_hist, ax_hist_resid])
         
         sgs = SGS(2,col, gs[4,:], height_ratios=[3,1], hspace=0., wspace=wspace)
         ax_dsq = fig.add_subplot(sgs[0,i], sharey=None if i==0 else ax_dsq)
@@ -491,6 +500,7 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         if i==0:
             ax_dsq.set_ylabel('$\Delta^2(k)_{{21}}$ [mK$^2$]')
         #ax_dsq.set_xlabel('$k$ [h/Mpc]')
+        ax_dsq.set_xscale('log')
         ax_dsq.set_yscale('log')
         ax_dsq.grid()
         ax_dsq.legend()
@@ -499,13 +509,14 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         dsq_resid = torch.abs(dsq_pred[0,0] - dsq_true[0,0])
         ax_dsq_resid.plot(k_vals_true, dsq_resid, lw=2, color='k')
         if i==0:
-            ax_dsq_resid.set_ylabel("|Residuals| [mK$^2$]")
+            ax_dsq_resid.set_ylabel("$|\mathrm{{Residuals}}|$")
         ax_dsq_resid.set_xlabel("$k\\ [\\mathrm{{cMpc^{-1}}}]$")
         #ax_dsq_resid.set_yscale('log')
+        ax_dsq_resid.set_xscale('log')
         ax_dsq_resid.set_yscale('log')
         ax_dsq_resid.grid()
         
-    plt.savefig(path + netG.model_name + "_quantiles.png", bbox_inches='tight')
+    plt.savefig(path + netG.model_name + "_quantiles.pdf", bbox_inches='tight')
     plt.close()
 
 @torch.no_grad()
