@@ -528,6 +528,7 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
     
     T21_pred_cpu = torch.empty(0, device='cpu')
     T21_cpu = torch.empty(0, device='cpu')
+    labels_cpu = torch.empty(0, device='cpu')
     for i,(T21, delta, vbv, labels) in tqdm(enumerate(dataloader), desc='sampling loop', total=len(dataloader), disable=False if str(device)=="cuda:0" else True):
         #prepare data
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
@@ -547,8 +548,10 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
         delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)#, factor=2.)
         vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)#, factor=2.)
         
-        #print date and time for each rank as it starts new box sampling
-        #print(f"Rank {rank} started sampling at {datetime.datetime.now()}", flush=True)
+        T21_lr = T21_lr[:1]
+        T21 = T21[:1]
+        delta = delta[:1]
+        vbv = vbv[:1]
         if torch.cuda.current_device() == 0:
             try:
                 print("Shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape, T21_lr_mean.shape, T21_lr_std.shape, flush=True)
@@ -570,18 +573,20 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
         else:
             #if torch.cuda.current_device() == 0:
             #    print("Validation without subbatching, shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape, flush=True)
-            T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=None, num_steps=num_steps, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if str(device)=="cuda:0" else False)[:,-1:].to(device=device)
+            labels = labels #None to disable redshift-conditional generation
+            T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=num_steps, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if str(device)=="cuda:0" else False)[:,-1:].to(device=device)
             T21_pred_i = invert_normalization(T21_pred_i, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
             T21 = invert_normalization(T21, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)
             
             try:
-                RMSE_temp = torch.sqrt(torch.mean(torch.square(T21_pred_j - T21),dim=(1,2,3,4), keepdim=False))
-                print(f"Rank {rank} finished sampling. RMSE: {RMSE_temp}", flush=True)
+                RMSE_temp = torch.sqrt(torch.mean(torch.square(T21_pred_i - T21),dim=(1,2,3,4), keepdim=False))
+                print(f"Rank {rank} finished sampling. RMSE: {RMSE_temp}, redshift: {labels}", flush=True)
             except Exception as e:
-                print(f"Rank {rank} finished sampling. Error: {e}", flush=True)
+                print(f"Rank {rank} finished sampling. Error: {e}, redshift: {labels}", flush=True)
 
             T21_pred_cpu = torch.cat((T21_pred_cpu, T21_pred_i.detach().cpu()), dim=0)
             T21_cpu = torch.cat((T21_cpu, T21.detach().cpu()), dim=0)
+            labels_cpu = torch.cat((labels_cpu, labels.detach().cpu()), dim=0)
         torch.distributed.barrier()
         if i==n_boxes-1:
             break #only do n_boxes (-1 or -random number for all)
@@ -589,18 +594,21 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
     # Gather tensors from all ranks on the CPU
     T21_pred_list = [torch.empty_like(T21_pred_cpu) for _ in range(world_size)]
     T21_list = [torch.empty_like(T21_cpu) for _ in range(world_size)]
+    labels_list = [torch.empty_like(labels_cpu) for _ in range(world_size)]
     
     #print date and time for each rank as it starts sampling
     #print(f"Rank {rank} finished sampling at {datetime.datetime.now()}. Waiting for all processes to finish...", flush=True)
     torch.distributed.barrier()
     torch.distributed.all_gather(T21_pred_list, T21_pred_cpu)
     torch.distributed.all_gather(T21_list, T21_cpu)
+    torch.distributed.all_gather(labels_list, labels_cpu)
     
     # Concatenate the gathered tensors
     T21_pred = torch.cat(T21_pred_list, dim=0)
     T21 = torch.cat(T21_list, dim=0)
+    labels = torch.cat(labels_list, dim=0)
 
     MSE = torch.mean(torch.square(T21_pred - T21),dim=(1,2,3,4), keepdim=False).mean().item()
     
-    return MSE, dict(T21=T21, T21_pred=T21_pred)
+    return MSE, dict(T21=T21, T21_pred=T21_pred, labels=labels)
     
