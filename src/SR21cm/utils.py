@@ -389,7 +389,7 @@ def invert_normalization(x, mode="standard", **kwargs):
         return x
 
 @torch.no_grad()
-def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 0.84], **kwargs):
+def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 0.84], rasterized=True, **kwargs):
     if True:
         plt.rcParams.update({'font.size': 14,
                              "text.usetex": True,
@@ -408,7 +408,13 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
 
     fig = plt.figure(figsize=(5*col,5*row))
     wspace = 0.2
-    gs = GS(row, col, figure=fig, wspace=wspace)
+    hspace = 0.3
+    gs = GS(row, col, figure=fig, wspace=wspace, hspace=hspace)
+
+    sgs_im = SGS(3,col, gs[:2,:], height_ratios=[0.05,1,1], hspace=0.3, wspace=wspace)
+    sgs_resid = SGS(2,col, gs[2,:], height_ratios=[0.05,1], hspace=0., wspace=wspace)
+    sgs_hist = SGS(2,col, gs[3,:], height_ratios=[3,1], hspace=0., wspace=wspace)
+    sgs_dsq = SGS(2,col, gs[4,:], height_ratios=[3,1], hspace=0., wspace=wspace)
 
     for i,quantile in enumerate(quantiles):
         q = torch.quantile(input=RMSE, q=quantile, dim=(-1),)
@@ -417,36 +423,44 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         #find slice closest to q
         idx_slice = torch.argmin(torch.abs(RMSE_slice[idx] - q), dim=-1)
         
-        ax_true = fig.add_subplot(gs[0,i])
-        ax_pred = fig.add_subplot(gs[1,i])
+        cax_im = fig.add_subplot(sgs_im[0,i])
+        ax_true = fig.add_subplot(sgs_im[1,i])
+        ax_pred = fig.add_subplot(sgs_im[2,i])
         vmin = min(T21[idx,0, idx_slice].min().item(), T21_pred[idx,0,idx_slice].min().item())
         vmax = max(T21[idx,0, idx_slice].max().item(), T21_pred[idx,0,idx_slice].max().item())
-        ax_true.imshow(T21[idx,0,idx_slice], vmin=vmin, vmax=vmax)
-        ax_true.set_title(f"High-resolution (HR)")#" (id {idx}, slice_id {idx_slice})")
-        ax_pred.imshow(T21_pred[idx,0,idx_slice], vmin=vmin, vmax=vmax)
-        ax_pred.set_title(f"Super-resolution (SR)")#" (id {idx}, slice_id {idx_slice})")
+        img = ax_true.imshow(T21[idx,0,idx_slice], vmin=vmin, vmax=vmax, rasterized=rasterized)
+        ax_pred.imshow(T21_pred[idx,0,idx_slice], vmin=vmin, vmax=vmax, rasterized=rasterized)
+        ax_pred.set_title("$T_{{21}}$ SR", fontdict={"fontsize":plt.rcParams['font.size']})
+        ax_true.xaxis.set_tick_params(labelbottom=False)
+        ax_pred.xaxis.set_tick_params(labelbottom=False)
+        cbar = fig.colorbar(img, cax=cax_im, orientation='horizontal')
+        cbar.ax.tick_params(labelsize=plt.rcParams['font.size'], labeltop=True, labelbottom=False, top=True, bottom=False)
+        cbar.set_label("$T_{{21}}$ HR [mK]", fontsize=plt.rcParams['font.size'])
+        cbar.ax.xaxis.set_label_position('top')
+        ax_pos = ax_true.get_position()
+        cbar_pos = cax_im.get_position()
+        cax_im.set_position([ax_pos.x0, ax_pos.y0+ax_pos.height+5e-3, ax_pos.width, cbar_pos.height])
+        if (i == 0) or (i == 1) or (i == len(quantiles)-1):
+            cbar.set_ticks([0,10,19])
         
-        ax_resid = fig.add_subplot(gs[2,i])
-        divider = make_axes_locatable(ax_resid)
-        cax = divider.append_axes('left', size='5%', pad=0.05)
+        cax_resid = fig.add_subplot(sgs_resid[0,i])
+        ax_resid = fig.add_subplot(sgs_resid[1,i])
         resid = T21[idx,0,idx_slice] - T21_pred[idx,0,idx_slice]
-        resid_mean = resid.mean().item()
-        resid_std = resid.std().item()
         vmin = -1 #resid_mean-2*resid_std
         vmax = 1 #resid_mean+2*resid_std
-        img = ax_resid.imshow(resid, vmin=vmin, vmax=vmax, cmap='viridis')
-        cbar = fig.colorbar(img, cax=cax, orientation='vertical', label="$|\mathrm{{Residuals}}|$" if i==0 else None)
-        #cbar.set_label(label="Residuals [mK]", loc='left')
-        cbar.ax.yaxis.set_label_position('left')
-        cax.yaxis.set_ticks_position('left')
-        ax_resid.set_title("Residuals (HR - SR)")
+        img = ax_resid.imshow(resid, vmin=vmin, vmax=vmax, cmap='viridis', rasterized=rasterized)
+        cbar = fig.colorbar(img, cax=cax_resid, orientation='horizontal')
+        cbar.ax.tick_params(labelsize=plt.rcParams['font.size'], labeltop=True, labelbottom=False, top=True, bottom=False)
+        cbar.set_label("$\mathrm{{Residuals}}$ [mK]", fontsize=plt.rcParams['font.size'])
+        cbar.ax.xaxis.set_label_position('top')
+        ax_pos = ax_resid.get_position()
+        cbar_pos = cax_resid.get_position()
+        cax_resid.set_position([ax_pos.x0, cbar_pos.y0+5e-3, ax_pos.width, cbar_pos.height])
         ax_resid.xaxis.set_tick_params(labelbottom=False)
-        ax_resid.yaxis.set_tick_params(labelleft=False)
 
-
-        sgs = SGS(2,col, gs[3,:], height_ratios=[3,1], hspace=0., wspace=wspace)
-        ax_hist = fig.add_subplot(sgs[0,i], sharey=None if i==0 else ax_hist)
-        ax_hist_resid = fig.add_subplot(sgs[1,i], sharex=ax_hist, sharey=None if i==0 else ax_hist_resid)
+        
+        ax_hist = fig.add_subplot(sgs_hist[0,i], sharey=None if i==0 else ax_hist)
+        ax_hist_resid = fig.add_subplot(sgs_hist[1,i], sharex=ax_hist, sharey=None if i==0 else ax_hist_resid)
         hist_min = min(T21[idx,0].min().item(), T21_pred[idx,0].min().item())
         hist_max = max(T21[idx,0].max().item(), T21_pred[idx,0].max().item())
         bins = np.linspace(hist_min, hist_max, 100)
@@ -454,19 +468,19 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         hist_pred, _ = np.histogram(T21_pred[idx,0,:,:,:].flatten(), bins=bins, density=True)  # Reuse the same bins for consistency
         #hist_true = hist_true / np.sum(hist_true)
         #hist_pred = hist_pred / np.sum(hist_pred)
-        ax_hist.bar(bins[:-1], hist_true, width=bins[1] - bins[0], alpha=0.5, label="T21 HR", )#color='orange')
-        ax_hist.bar(bins[:-1], hist_pred, width=bins[1] - bins[0], alpha=0.5, label="T21 SR", )#color='blue')
+        ax_hist.bar(bins[:-1], hist_true, width=bins[1] - bins[0], alpha=0.5, label="T21 HR", rasterized=rasterized)
+        ax_hist.bar(bins[:-1], hist_pred, width=bins[1] - bins[0], alpha=0.5, label="T21 SR", rasterized=rasterized)
         if i==0:
             ax_hist.set_ylabel("PDF")
         ax_hist.legend()
-        ax_hist.set_title(f"$\mathrm{{RMSE}}_{{Q={quantile:.3f}}}={q:.3f}$")
+        ax_hist.set_title(f"$\mathrm{{RMSE}}_{{Q={quantile:.3f}}}={q:.3f}$", fontdict={"fontsize":plt.rcParams['font.size']})
         #logfmt = LogFormatterExponent(base=10.0, labelOnlyBase=False)
         #ax_hist.yaxis.set_major_formatter(logfmt)
         ax_hist.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
         #ax_hist.get_yaxis().get_offset_text().set_position((-0.1,0.9))
         hist_resid = np.abs(hist_true - hist_pred)
         #hist_resid = hist_resid / np.sum(hist_resid)
-        ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="$|\mathrm{{Residuals}}|$", color='k')
+        ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="$|\mathrm{{Residuals}}|$", color='k', rasterized=rasterized)
         ax_hist_resid.legend()
         ax_hist_resid.set_xlabel("T21 [mK]")
         #ax_hist_resid.yaxis.set_major_formatter(logfmt)
@@ -487,13 +501,13 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_hist_resid.text(0, 0.95, default_text, transform=ax_hist_resid.transAxes, ha='left', va='top')
         fig.align_ylabels([ax_hist, ax_hist_resid])
         
-        sgs = SGS(2,col, gs[4,:], height_ratios=[3,1], hspace=0., wspace=wspace)
-        ax_dsq = fig.add_subplot(sgs[0,i], sharey=None if i==0 else ax_dsq)
-        ax_dsq_resid = fig.add_subplot(sgs[1,i], sharex=ax_dsq, sharey=None if i==0 else ax_dsq_resid)
+        
+        ax_dsq = fig.add_subplot(sgs_dsq[0,i], sharey=None if i==0 else ax_dsq)
+        ax_dsq_resid = fig.add_subplot(sgs_dsq[1,i], sharex=ax_dsq, sharey=None if i==0 else ax_dsq_resid)
         k_vals_true, dsq_true  = calculate_power_spectrum(T21[idx:idx+1], Lpix=3, kbins=100, dsq = True, method="torch", device="cpu")
         k_vals_pred, dsq_pred  = calculate_power_spectrum(T21_pred[idx:idx+1], Lpix=3, kbins=100, dsq = True, method="torch", device="cpu")
-        ax_dsq.plot(k_vals_true, dsq_true[0,0], label="T21 HR", ls='solid', lw=2)
-        ax_dsq.plot(k_vals_pred, dsq_pred[0,0], label="T21 SR", ls='solid', lw=2)
+        ax_dsq.plot(k_vals_true, dsq_true[0,0], label="T21 HR", ls='solid', lw=2, rasterized=rasterized)
+        ax_dsq.plot(k_vals_pred, dsq_pred[0,0], label="T21 SR", ls='solid', lw=2, rasterized=rasterized)
         if i==0:
             ax_dsq.set_ylabel('$\Delta^2(k)_{{21}}$ [mK$^2$]')
         #ax_dsq.set_xlabel('$k$ [h/Mpc]')
@@ -504,7 +518,7 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_dsq.xaxis.set_tick_params(labelbottom=False)
 
         dsq_resid = torch.abs(dsq_pred[0,0] - dsq_true[0,0])
-        ax_dsq_resid.plot(k_vals_true, dsq_resid, lw=2, color='k')
+        ax_dsq_resid.plot(k_vals_true, dsq_resid, lw=2, color='k', rasterized=rasterized)
         if i==0:
             ax_dsq_resid.set_ylabel("$|\mathrm{{Residuals}}|$")
         ax_dsq_resid.set_xlabel("$k\\ [\\mathrm{{cMpc^{-1}}}]$")
@@ -513,7 +527,7 @@ def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 
         ax_dsq_resid.set_yscale('log')
         ax_dsq_resid.grid()
         
-    plt.savefig(path + netG.model_name + "_quantiles.pdf", bbox_inches='tight')
+    plt.savefig(path + netG.model_name + "_quantiles.pdf", bbox_inches='tight', dpi=300)
     plt.close()
 
 
@@ -530,7 +544,7 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
     T21_pred_cpu = torch.empty(0, device='cpu')
     T21_cpu = torch.empty(0, device='cpu')
     labels_cpu = torch.empty(0, device='cpu')
-    for i,(T21, delta, vbv, labels) in tqdm(enumerate(dataloader), desc='sampling loop', total=len(dataloader), disable=False if str(device)=="cuda:0" else True):
+    for i,(T21, delta, vbv, labels) in tqdm(enumerate(dataloader), desc='sampling loop', total=len(dataloader), disable=False):
         #prepare data
         T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
         delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
@@ -549,12 +563,12 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
         delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)#, factor=2.)
         vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)#, factor=2.)
         
-        T21_lr_mean = T21_lr_mean[:1]
-        T21_lr_std = T21_lr_std[:1]
-        T21_lr = T21_lr[:1]
-        T21 = T21[:1]
-        delta = delta[:1]
-        vbv = vbv[:1]
+        #T21_lr_mean = T21_lr_mean[:1]
+        #T21_lr_std = T21_lr_std[:1]
+        #T21_lr = T21_lr[:1]
+        #T21 = T21[:1]
+        #delta = delta[:1]
+        #vbv = vbv[:1]
         
         if split_batch: #split subcube minibatch into smaller mini-batches for memory
             sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std)
@@ -572,7 +586,7 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
             #if torch.cuda.current_device() == 0:
             #    print("Validation without subbatching, shapes: ", T21.shape, delta.shape, vbv.shape, T21_lr.shape, flush=True)
             labels = labels #None to disable redshift-conditional generation
-            T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=num_steps, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if str(device)=="cuda:0" else False)[:,-1:].to(device=device)
+            T21_pred_i = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=num_steps, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True)[:,-1:].to(device=device)
             T21_pred_i = invert_normalization(T21_pred_i, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
             T21 = invert_normalization(T21, mode="standard", factor=norm_factor, x_mean = T21_lr_mean, x_std = T21_lr_std)
 
