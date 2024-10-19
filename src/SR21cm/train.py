@@ -285,7 +285,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
     #model_channels = int(fn.split("channels_")[1].split("_")[0])
     #channel_mult = [int(i) for i in fn.split("mult_")[1].split("_")[0].split("-")]
     network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                    model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                    model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
     network = SongUNet
@@ -350,7 +350,18 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
 
 
 ###START main pytorch multi-gpu tutorial###
-def train(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 56, model_channels = 32, channel_mult = [1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=1):
+def train(rank, 
+          world_size=0, 
+          total_epochs = 1, 
+          batch_size = 1, 
+          train_models = 56, 
+          model_channels = 32, 
+          channel_mult = [1,2,4,8,16], 
+          cut_factor=1, 
+          norm_factor=1., 
+          memory_profiling=False, 
+          model_id=1
+          ):
     #train_models = 56
     #model_channels = 8
     #model_id = 3
@@ -374,7 +385,7 @@ def train(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 5
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
     #network = UNet
     network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=1, # (for tokens?), augment_dim,
-                    model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8,], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                    model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
     #img_resolution=64, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[4,], mid_attn=True, largest model to pass through 512 on 80GB and 40GB
@@ -432,7 +443,7 @@ def train(rank, world_size=0, total_epochs = 1, batch_size = 1, train_models = 5
     train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
                                     redshifts=list(range(10,21)), IC_seeds=list(range(0,train_models)), Npix=256, device=device)
-    train_data_module.getFullDataset()
+    #train_data_module.getFullDataset()
     train_sampler = DistributedSampler(dataset=train_data_module, shuffle=True, seed=seed) if multi_gpu else None
     train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=(train_sampler is None), sampler = train_sampler)#, num_workers=world_size*4)#, pin_memory=True) #rule of thumb 4*num_gpus
 
