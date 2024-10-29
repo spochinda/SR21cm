@@ -55,6 +55,10 @@ class GaussianDiffusion(nn.Module):
         self.loss_validation = {"loss": [1e20,], "loss_validation": [1e20,]}
         self.noise_schedule_opt = noise_schedule_opt
         self.loss_fn = loss_fn
+        if self.loss_fn.use_amp:
+            self.scaler = torch.amp.GradScaler()
+        else:
+            self.scaler = False
         self.sample = Sampler()
         #self.noise_schedule = noise_schedule
         #self.noise_schedule_opt = noise_schedule_opt
@@ -79,11 +83,13 @@ class GaussianDiffusion(nn.Module):
                     loss = self.loss,
                     loss_validation = self.loss_validation,
                     #noise_schedule_opt = self.noise_schedule_opt),
-                    noise_schedule_opt = self.noise_schedule_opt),
+                    noise_schedule_opt = self.noise_schedule_opt,
+                    scaler=self.scaler.state_dict() if hasattr(self, 'scaler') and self.scaler!=False else False,
+                    ),
                     f = path
                     )
         else:
-            if self.rank == 0:
+            if True:#self.rank == 0:
                 print("Saving model!", flush=True)
                 torch.save(
                     obj = dict(
@@ -95,14 +101,17 @@ class GaussianDiffusion(nn.Module):
                         loss = self.loss,
                         loss_validation = self.loss_validation,
                         #noise_schedule_opt = self.noise_schedule_opt),
-                        noise_schedule_opt = self.noise_schedule_opt),
+                        noise_schedule_opt = self.noise_schedule_opt,
+                        scaler=self.scaler.state_dict() if hasattr(self, 'scaler') and self.scaler!=False else False,
+                        ),
                         f = path
                         )
 
     def load_network(self, path):
         if self.rank==0:
             print("Loading model!", flush=True)
-        loaded_state = torch.load(path, map_location=self.device)
+        dev = torch.cuda.current_device()
+        loaded_state = torch.load(path, map_location = lambda storage, loc: storage.cuda(dev))
         self.network_opt = loaded_state['network_opt']
         self.model = self.network(**self.network_opt)
         self.model.load_state_dict(loaded_state['model'])
@@ -131,6 +140,11 @@ class GaussianDiffusion(nn.Module):
             self.noise_schedule_opt = loaded_state['beta_schedule_opt']
         except:
             self.noise_schedule_opt = loaded_state['noise_schedule_opt'] #changed name to noise_schedule_opt
+        try:
+            self.scaler.load_state_dict(loaded_state['scaler'])
+        except:
+            self.scaler = False
+            print("Failed to load scaler.", flush=True)
         #self.set_new_noise_schedule()
 
     

@@ -13,6 +13,8 @@ import argparse
 
 #sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from SR21cm.train import sample, train
+from SR21cm.utils import sample_scales
+from SR21cm.plotting import plot_scales
 
 def ddp_setup(rank: int, world_size: int):
     try:
@@ -35,7 +37,7 @@ if __name__ == "__main__":
     # Add the optional arguments
     parser.add_argument("--channels", type=int, default=8, help="channels")
     parser.add_argument("--nmodels", type=int, default=1, help="nmodels")
-    parser.add_argument("--id", type=int, default=11, help="id") #4
+    parser.add_argument("--id", type=int, default=8, help="id") #4
 
     # Parse the command-line arguments
     args = parser.parse_args()
@@ -64,14 +66,26 @@ if __name__ == "__main__":
             
             
             training_time = time.time()
-            cut_factor = 1 #train on 128
+            cut_factor = 0 #train on 128 or 256
             mp.spawn(train, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
             print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
-            print("Sampling...", flush=True)
+            
+            print("Sampling scales...", flush=True)
             sampling_time = time.time()
-            cut_factor = 0 #sample 256
-            mp.spawn(sample, args=(world_size, n_models, channel, [1,2,4,8,16], cut_factor, 1., id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
-            print(f"Sampling took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
+            mp.spawn(sample_scales, 
+                     args=(
+                         world_size,
+                         "/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
+                         ),
+                     nprocs=world_size)
+            mp.spawn(plot_scales, args=(world_size, "T21_scales_",), nprocs=world_size)
+            print(f"Sampling scales and plotting took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
+
+            #cut_factor = 0 #sample 256
+            #print(f"Sampling all {256//2**cut_factor}...", flush=True)
+            #sampling_time = time.time()
+            #mp.spawn(sample, args=(world_size, n_models, channel, [1,2,4,8,16], cut_factor, 1., id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+            #print(f"Sampling took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
     else:
         print("Not using multi_gpu",flush=True)
         try:

@@ -1,21 +1,38 @@
 import os
+
 import torch
-import numpy as np
-from scipy.io import loadmat
-import pandas as pd
 import torch.distributed
 import torch.utils
 import torch.utils.data
-from tqdm import tqdm
-import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
-from mpl_toolkits.axes_grid1 import make_axes_locatable
+from torch.distributed import init_process_group, destroy_process_group
 
+from tqdm import tqdm
+import numpy as np
+from scipy.io import loadmat
+import pandas as pd
+
+
+from .model_edm import SongUNet
+from .loss import VPLoss
+from .diffusion import GaussianDiffusion
+
+def ddp_setup(rank: int, world_size: int):
+    try:
+        os.environ["MASTER_ADDR"] #check if master address exists
+        print("Found master address: ", os.environ["MASTER_ADDR"])
+    except:
+        print("Did not find master address variable. Setting manually...")
+        os.environ["MASTER_ADDR"] = "localhost"
+
+    
+    os.environ["MASTER_PORT"] = "2596"#"12355" 
+    torch.cuda.set_device(rank)
+    init_process_group(backend="nccl", rank=rank, world_size=world_size) #backend gloo for cpus?
 
 class CustomDataset(torch.utils.data.Dataset):
     def __init__(self, path_T21, path_IC, 
                  redshifts=[10,], IC_seeds=list(range(1000,1008)), 
-                 Npix=256, device='cpu'):
+                 Npix=256, growth_factor=False, device='cpu'):
         self.device = device
         self.path_T21 = path_T21
         self.path_IC = path_IC
@@ -23,14 +40,11 @@ class CustomDataset(torch.utils.data.Dataset):
         self.redshifts = redshifts
         self.IC_seeds = IC_seeds
         self.Npix = Npix
+
+        if growth_factor:
+            self.g = get_growth_factor(device=device)
         
         self.df = self.getDataFrame()
-        try: 
-            if torch.cuda.current_device() == 0:
-                print("Loaded dataframe", flush=True)
-                print(self.df, flush=True)
-        except:
-            pass
             
         #self.labels = pd.read_csv(annotations_file)
         #self.img_dir = img_dir
@@ -70,6 +84,9 @@ class CustomDataset(torch.utils.data.Dataset):
         #if torch.cuda.current_device() == 0:
         #    print(f"Time: Load: {load_etime - load_stime:.3f}, Convert: {convert_etime - convert_stime:.3f}, GpuMove: {gpumove_etime - gpumove_stime:.3f}", flush=True)
         # Time: Load: 1.907, Convert: 0.000, GpuMove: 0.094
+        if hasattr(self, 'g'):
+            growth_factor = self.g.growth_factor(labels)
+            delta = delta * growth_factor
         return T21, delta, vbv, labels#T21_lr, labels
     
     def getDataFrame(self):
@@ -147,6 +164,30 @@ class CustomDataset(torch.utils.data.Dataset):
         self.dataset = torch.utils.data.TensorDataset(T21, delta, vbv, labels)
         
         return self.dataset
+    
+class get_growth_factor():
+    def __init__(self, path_D = None, path_z = None, device='cpu'):
+        #get file path and load Dz.mat
+        if path_D is None:
+            self.path_D = os.path.dirname(__file__) + '/Dz.mat'
+        else:
+            self.path_D = path_D
+        if path_z is None:    
+            self.path_z = os.path.dirname(__file__) + '/zs_for_D.mat'
+        else:
+            self.path_z = path_z
+        self.D = loadmat(self.path_D)['D'].flatten()
+        self.z = loadmat(self.path_z)['zs'].flatten()
+        self.idx40 = np.argmin((self.z - 40)**2)
+        self.D40 = self.D[self.idx40]
+                       
+        self.device = device
+
+    def growth_factor(self, z):
+        growth_factor = np.interp(z, self.z, self.D) / self.D40
+        growth_factor = torch.tensor(growth_factor, dtype=torch.float32, device=self.device)
+        return growth_factor
+
 
 
 def linear_beta_schedule(timesteps, beta_start = 0.0001, beta_end = 0.02):
@@ -388,147 +429,7 @@ def invert_normalization(x, mode="standard", **kwargs):
         x = ((x + 1) * (x_max - x_min) / 2 ) + x_min
         return x
 
-@torch.no_grad()
-def plot_sigmas(T21, T21_pred=None, netG=None, path = "", quantiles=[0.16, 0.5, 0.84], rasterized=True, **kwargs):
-    if True:
-        plt.rcParams.update({'font.size': 14,
-                             "text.usetex": True,
-                             "font.family": "serif",
-                             "font.serif": "cm",
-                             })
-    T21 = T21.detach().cpu()
-    T21_pred = T21_pred.detach().cpu()
 
-
-    RMSE = ((T21 - T21_pred)**2).mean(dim=(1,2,3,4))**0.5
-    RMSE_slice = ((T21 - T21_pred)**2).mean(dim=(1,3,4))**0.5
-
-    row = 5
-    col = len(quantiles)
-
-    fig = plt.figure(figsize=(5*col,5*row))
-    wspace = 0.2
-    hspace = 0.3
-    gs = GS(row, col, figure=fig, wspace=wspace, hspace=hspace)
-
-    sgs_im = SGS(3,col, gs[:2,:], height_ratios=[0.05,1,1], hspace=0.3, wspace=wspace)
-    sgs_resid = SGS(2,col, gs[2,:], height_ratios=[0.05,1], hspace=0., wspace=wspace)
-    sgs_hist = SGS(2,col, gs[3,:], height_ratios=[3,1], hspace=0., wspace=wspace)
-    sgs_dsq = SGS(2,col, gs[4,:], height_ratios=[3,1], hspace=0., wspace=wspace)
-
-    for i,quantile in enumerate(quantiles):
-        q = torch.quantile(input=RMSE, q=quantile, dim=(-1),)
-        #find model index closest to q
-        idx = torch.argmin(torch.abs(RMSE - q), dim=-1)
-        #find slice closest to q
-        idx_slice = torch.argmin(torch.abs(RMSE_slice[idx] - q), dim=-1)
-        
-        cax_im = fig.add_subplot(sgs_im[0,i])
-        ax_true = fig.add_subplot(sgs_im[1,i])
-        ax_pred = fig.add_subplot(sgs_im[2,i])
-        vmin = min(T21[idx,0, idx_slice].min().item(), T21_pred[idx,0,idx_slice].min().item())
-        vmax = max(T21[idx,0, idx_slice].max().item(), T21_pred[idx,0,idx_slice].max().item())
-        img = ax_true.imshow(T21[idx,0,idx_slice], vmin=vmin, vmax=vmax, rasterized=rasterized)
-        ax_pred.imshow(T21_pred[idx,0,idx_slice], vmin=vmin, vmax=vmax, rasterized=rasterized)
-        ax_pred.set_title("$T_{{21}}$ SR", fontdict={"fontsize":plt.rcParams['font.size']})
-        ax_true.xaxis.set_tick_params(labelbottom=False)
-        ax_pred.xaxis.set_tick_params(labelbottom=False)
-        cbar = fig.colorbar(img, cax=cax_im, orientation='horizontal')
-        cbar.ax.tick_params(labelsize=plt.rcParams['font.size'], labeltop=True, labelbottom=False, top=True, bottom=False)
-        cbar.set_label("$T_{{21}}$ HR [mK]", fontsize=plt.rcParams['font.size'])
-        cbar.ax.xaxis.set_label_position('top')
-        ax_pos = ax_true.get_position()
-        cbar_pos = cax_im.get_position()
-        cax_im.set_position([ax_pos.x0, ax_pos.y0+ax_pos.height+5e-3, ax_pos.width, cbar_pos.height])
-        if (i == 0) or (i == 1) or (i == len(quantiles)-1):
-            cbar.set_ticks([0,10,19])
-        
-        cax_resid = fig.add_subplot(sgs_resid[0,i])
-        ax_resid = fig.add_subplot(sgs_resid[1,i])
-        resid = T21[idx,0,idx_slice] - T21_pred[idx,0,idx_slice]
-        vmin = -1 #resid_mean-2*resid_std
-        vmax = 1 #resid_mean+2*resid_std
-        img = ax_resid.imshow(resid, vmin=vmin, vmax=vmax, cmap='viridis', rasterized=rasterized)
-        cbar = fig.colorbar(img, cax=cax_resid, orientation='horizontal')
-        cbar.ax.tick_params(labelsize=plt.rcParams['font.size'], labeltop=True, labelbottom=False, top=True, bottom=False)
-        cbar.set_label("$\mathrm{{Residuals}}$ [mK]", fontsize=plt.rcParams['font.size'])
-        cbar.ax.xaxis.set_label_position('top')
-        ax_pos = ax_resid.get_position()
-        cbar_pos = cax_resid.get_position()
-        cax_resid.set_position([ax_pos.x0, cbar_pos.y0+5e-3, ax_pos.width, cbar_pos.height])
-        ax_resid.xaxis.set_tick_params(labelbottom=False)
-
-        
-        ax_hist = fig.add_subplot(sgs_hist[0,i], sharey=None if i==0 else ax_hist)
-        ax_hist_resid = fig.add_subplot(sgs_hist[1,i], sharex=ax_hist, sharey=None if i==0 else ax_hist_resid)
-        hist_min = min(T21[idx,0].min().item(), T21_pred[idx,0].min().item())
-        hist_max = max(T21[idx,0].max().item(), T21_pred[idx,0].max().item())
-        bins = np.linspace(hist_min, hist_max, 100)
-        hist_true, _ = np.histogram(T21[idx,0,:,:,:].flatten(), bins=bins, density=True)
-        hist_pred, _ = np.histogram(T21_pred[idx,0,:,:,:].flatten(), bins=bins, density=True)  # Reuse the same bins for consistency
-        #hist_true = hist_true / np.sum(hist_true)
-        #hist_pred = hist_pred / np.sum(hist_pred)
-        ax_hist.bar(bins[:-1], hist_true, width=bins[1] - bins[0], alpha=0.5, label="T21 HR", rasterized=rasterized)
-        ax_hist.bar(bins[:-1], hist_pred, width=bins[1] - bins[0], alpha=0.5, label="T21 SR", rasterized=rasterized)
-        if i==0:
-            ax_hist.set_ylabel("PDF")
-        ax_hist.legend()
-        ax_hist.set_title(f"$\mathrm{{RMSE}}_{{Q={quantile:.3f}}}={q:.3f}$", fontdict={"fontsize":plt.rcParams['font.size']})
-        #logfmt = LogFormatterExponent(base=10.0, labelOnlyBase=False)
-        #ax_hist.yaxis.set_major_formatter(logfmt)
-        ax_hist.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
-        #ax_hist.get_yaxis().get_offset_text().set_position((-0.1,0.9))
-        hist_resid = np.abs(hist_true - hist_pred)
-        #hist_resid = hist_resid / np.sum(hist_resid)
-        ax_hist_resid.bar(bins[:-1], hist_resid, width=bins[1] - bins[0], alpha=0.5, label="$|\mathrm{{Residuals}}|$", color='k', rasterized=rasterized)
-        ax_hist_resid.legend()
-        ax_hist_resid.set_xlabel("T21 [mK]")
-        #ax_hist_resid.yaxis.set_major_formatter(logfmt)
-        ax_hist_resid.ticklabel_format(axis='y', style='sci', scilimits=(0,0))
-        if i==0:
-            ax_hist_resid.set_ylabel("$|\mathrm{{Residuals}}|$")
-        fig.canvas.draw()
-        default_text = ax_hist_resid.get_yaxis().get_offset_text().get_text()
-        default_position = ax_hist_resid.get_yaxis().get_offset_text().get_position()
-
-        #transform default position to 0 to 1 coordinates
-        #default_position = ax_hist_resid.transData.transform(default_position)
-        #default_position = ax_hist_resid.transData.inverted().transform(default_position)
-
-        #hide offset text
-        ax_hist_resid.get_yaxis().get_offset_text().set_visible(False)
-        #manually set offset text slightly below default position
-        ax_hist_resid.text(0, 0.95, default_text, transform=ax_hist_resid.transAxes, ha='left', va='top')
-        fig.align_ylabels([ax_hist, ax_hist_resid])
-        
-        
-        ax_dsq = fig.add_subplot(sgs_dsq[0,i], sharey=None if i==0 else ax_dsq)
-        ax_dsq_resid = fig.add_subplot(sgs_dsq[1,i], sharex=ax_dsq, sharey=None if i==0 else ax_dsq_resid)
-        k_vals_true, dsq_true  = calculate_power_spectrum(T21[idx:idx+1], Lpix=3, kbins=100, dsq = True, method="torch", device="cpu")
-        k_vals_pred, dsq_pred  = calculate_power_spectrum(T21_pred[idx:idx+1], Lpix=3, kbins=100, dsq = True, method="torch", device="cpu")
-        ax_dsq.plot(k_vals_true, dsq_true[0,0], label="T21 HR", ls='solid', lw=2, rasterized=rasterized)
-        ax_dsq.plot(k_vals_pred, dsq_pred[0,0], label="T21 SR", ls='solid', lw=2, rasterized=rasterized)
-        if i==0:
-            ax_dsq.set_ylabel('$\Delta^2(k)_{{21}}$ [mK$^2$]')
-        #ax_dsq.set_xlabel('$k$ [h/Mpc]')
-        ax_dsq.set_xscale('log')
-        ax_dsq.set_yscale('log')
-        ax_dsq.grid()
-        ax_dsq.legend()
-        ax_dsq.xaxis.set_tick_params(labelbottom=False)
-
-        dsq_resid = torch.abs(dsq_pred[0,0] - dsq_true[0,0])
-        ax_dsq_resid.plot(k_vals_true, dsq_resid, lw=2, color='k', rasterized=rasterized)
-        if i==0:
-            ax_dsq_resid.set_ylabel("$|\mathrm{{Residuals}}|$")
-        ax_dsq_resid.set_xlabel("$k\\ [\\mathrm{{cMpc^{-1}}}]$")
-        #ax_dsq_resid.set_yscale('log')
-        ax_dsq_resid.set_xscale('log')
-        ax_dsq_resid.set_yscale('log')
-        ax_dsq_resid.grid()
-        
-    plt.savefig(path + netG.model_name + "_quantiles.pdf", bbox_inches='tight', dpi=300)
-    plt.close()
 
 
 @torch.no_grad()
@@ -631,4 +532,115 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
     MSE = torch.mean(torch.square(T21_pred - T21),dim=(1,2,3,4), keepdim=False).mean().item()
     
     return MSE, dict(T21=T21, T21_pred=T21_pred, labels=labels)
+
+
+
+
+
+
+@torch.no_grad()
+def sample_scales(rank, world_size, model_path, **kwargs):
+    """
+    Samples scales of T21 cubes using a Gaussian Diffusion model.
+    Args:
+        rank (int): The rank of the current process in distributed training.
+        world_size (int): The total number of processes in distributed training.
+        model_path (str): Path to the pre-trained model.
+        **kwargs: Additional keyword arguments.
+            save_path (str, optional): Path to save the output. Defaults to the base name of model_path.
+            one_box (bool, optional): If True, only use sample first box index. Defaults to False.
+    Returns:
+        None. Saves the sampled T21 scales to the specified path.
+    Notes:
+        - This function sets up a distributed data parallel environment.
+        - Loads pre-trained model and T21 cubes.
+        - Normalizes and processes the T21 cubes and their corresponding delta and vbv cubes.
+        - Uses the Gaussian Diffusion model to sample new T21 cubes.
+        - Saves the original and predicted T21 cubes to a dictionary and saves it to disk.
+    """
+    save_path = kwargs.pop("save_path", model_path.split(".")[0])
+    one_box = kwargs.pop("one_box", False)
+
+    ddp_setup(rank, world_size=world_size)#multi_gpu = world_size > 1
+
+    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+                    model_channels=8, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+                    embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
+                    )
     
+    network = SongUNet
+    
+    #noise_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
+    #noise_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
+    #noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
+    noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
+    
+    loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False)
+    
+    netG = GaussianDiffusion(
+            network=network,
+            network_opt=network_opt,
+            noise_schedule_opt=noise_schedule_opt,
+            loss_fn = loss_fn,
+            learning_rate=1e-3,
+            scheduler=False,
+            mp=True,
+            rank=rank,
+        )
+    
+    #netG.multi_gpu = False
+    
+    netG.load_network(model_path)
+
+    netG.model_name = model_path.split("/")[-1].split(".")[0]
+
+    T21_dict = {}
+    for key1,key2,cut in zip(["T21_512", "T21_256", "T21_128"],["T21_pred_512", "T21_pred_256", "T21_pred_128"],[0,1,2]):
+        T21 = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/T21_cube_z10__Npix512_IC0.mat")["Tlin"]
+        T21 = torch.from_numpy(T21).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=rank)
+
+        delta = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/delta_Npix512_IC0.mat")["delta"]
+        delta = torch.from_numpy(delta).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=rank)
+
+        vbv = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/vbv_Npix512_IC0.mat")["vbv"]
+        vbv = torch.from_numpy(vbv).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=rank)
+
+
+        T21 = get_subcubes(cubes=T21, cut_factor=cut)
+        delta = get_subcubes(cubes=delta, cut_factor=cut)
+        vbv = get_subcubes(cubes=vbv, cut_factor=cut)
+        if one_box:
+            T21 = T21[:1]
+            delta = delta[:1]
+            vbv = vbv[:1]
+        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+                    
+        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+        T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
+        
+        T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=1.)#, factor=2.)
+        T21, _,_ = normalize(T21, mode="standard", factor=1., x_mean=T21_lr_mean, x_std=T21_lr_std)
+        delta, _,_ = normalize(delta, mode="standard", factor=1.)
+        vbv, _,_ = normalize(vbv, mode="standard", factor=1.)
+
+        labels = None
+
+        #print("networkopt", netG.network_opt["label_dim"], flush=True)
+        #torch.distributed.barrier()
+
+        T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if torch.cuda.current_device() == 0 else False)[:,-1:].to(device=rank)
+        T21_pred = invert_normalization(T21_pred, mode="standard", factor=1., x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
+        T21 = invert_normalization(T21, mode="standard", factor=1., x_mean = T21_lr_mean, x_std = T21_lr_std)
+
+        T21_dict[key1] = T21.detach().cpu()
+        T21_dict[key2] = T21_pred.detach().cpu()
+
+        del T21, T21_pred, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std
+
+        print(f"[dev:{rank}] Finished {key1}, {key2}", flush=True)
+
+    torch.save(T21_dict, save_path+f"T21_scales_{netG.model_name}_rank_{rank}.pth")
+
+
+    destroy_process_group()

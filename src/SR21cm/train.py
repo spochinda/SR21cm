@@ -5,18 +5,16 @@ import torch.utils
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
 
-from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, plot_sigmas, sample_model_v3
+from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, sample_model_v3
+from .plotting import plot_sigmas, plot_input, plot_hist
 from .diffusion import GaussianDiffusion
 from .model_edm import SongUNet
 from .loss import VPLoss
 
-import numpy as np 
-import matplotlib.pyplot as plt
-from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
-
 import os
 import time
 import psutil  # Import psutil
+from contextlib import nullcontext
 from tqdm import tqdm
 from datetime import datetime
 
@@ -42,79 +40,109 @@ def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., sp
     """
     netG.model.train()
     
-    avg_loss = torch.tensor(0.0, device=device)
+    
 
-    for i,(T21, delta, vbv, labels) in enumerate(train_dataloader):
-        if True:
+    for i,(T21_, delta_, vbv_, labels) in enumerate(train_dataloader):
+        if netG.network_opt["label_dim"] > 0:
             labels = labels
         else:
             labels = None #set labels to None for now (not used)
 
-        T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
-        delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
-        vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
-        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
-                    
-        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
-        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
-        T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
+        #random cut = 0 or 1
+        #cut = torch.randint(0,2,(1,)).item()
         
-        T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=norm_factor)#, factor=2.)
-        T21, _,_ = normalize(T21, mode="standard", factor=norm_factor, x_mean=T21_lr_mean, x_std=T21_lr_std)
-        delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)
-        vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)
-        T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
-        if split_batch: #split subcube minibatch into smaller mini-batches for memory
-            sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
-            sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=sub_batch, shuffle=False, sampler = None) # (2**(cut_factor.item()-1))**3 // 2 #4
-            #data_prep_etime = time.time() - data_prep_stime###
-            #loop time
-            #loop_stime = time.time()###
-            for j,(T21, delta, vbv, T21_lr) in enumerate(sub_dataloader):
-                #print(f"Sub {j}", flush=True)
-
-                netG.optG.zero_grad()
-                #loss_stime = time.time()###
-                loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
-                                    labels=labels, augment_pipe=None,
-                                    )
-                #loss_etime = time.time() - loss_stime###
-                avg_loss = avg_loss + loss * T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
-                #backward time
-                #backward_stime = time.time()###
-                loss.backward()
-                #backward_etime = time.time() - backward_stime###
-                #clip time
-                #clip_stime = time.time()###
-                torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
-                #clip_etime = time.time() - clip_stime###
-                #optimizer time
-                #optimizer_stime = time.time()###
-                netG.optG.step()        
-                #optimizer_etime = time.time() - optimizer_stime###
-                #ema time
-                #ema_stime = time.time()###
-                netG.ema.update() #Update netG.model with exponential moving average  
-                #ema_etime = time.time() - ema_stime###
-            #loop_etime = time.time() - loop_stime###    
-        else:
-            loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
-                                    labels=labels, augment_pipe=None,
-                                    )
-            avg_loss = avg_loss + loss * T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
-            #with torch.autograd.profiler.record_function("## backward ##") if False else contextlib.nullcontext(): 
-            loss.backward()
-            #with torch.autograd.profiler.record_function("## optimizer ##") if False else contextlib.nullcontext():            
-            torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
+        for cut in [2,1]:
+            
+            avg_loss = torch.tensor(0.0, device=device)
+            
+            T21 = get_subcubes(cubes=T21_, cut_factor=cut)
+            delta = get_subcubes(cubes=delta_, cut_factor=cut)
+            vbv = get_subcubes(cubes=vbv_, cut_factor=cut)
+            T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+                        
+            T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+            T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+            T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
+            
+            T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=norm_factor)#, factor=2.)
+            T21, _,_ = normalize(T21, mode="standard", factor=norm_factor, x_mean=T21_lr_mean, x_std=T21_lr_std)
+            delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)
+            vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)
+            T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
+            #if torch.cuda.current_device() == 0:
+            #    print(f"Shape of T21: {T21.shape}", flush=True)
             netG.optG.zero_grad()
-            netG.optG.step()        
-            #with torch.autograd.profiler.record_function("## ema ##") if False else contextlib.nullcontext():                
-            netG.ema.update() #Update netG.model with exponential moving average
+            if False:#split_batch: #split subcube minibatch into smaller mini-batches for memory
+                sub_data = torch.utils.data.TensorDataset(T21, delta, vbv, T21_lr)
+                sub_dataloader = torch.utils.data.DataLoader(sub_data, batch_size=sub_batch, shuffle=False, sampler = None) # (2**(cut_factor.item()-1))**3 // 2 #4
+                #data_prep_etime = time.time() - data_prep_stime###
+                #loop time
+                #loop_stime = time.time()###
+                for j,(T21, delta, vbv, T21_lr) in enumerate(sub_dataloader):
+                    #print(f"Sub {j}", flush=True)
+
+                    netG.optG.zero_grad()
+                    #loss_stime = time.time()###
+                    loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
+                                        labels=labels, augment_pipe=None,
+                                        )
+                    avg_loss = avg_loss + loss * T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
+                    netG.optG.step()        
+                    netG.ema.update() #Update netG.model with exponential moving average  
+            else:
+                #make cut a label tensor
+                if netG.network_opt["label_dim"] > 0:
+                    labels = torch.tensor([cut], device=device)
+                else:
+                    labels = None
+                #with torch.cuda.amp.autocast(enabled=netG.loss_fn.use_amp) if netG.loss_fn.use_amp else nullcontext():
+                loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr],
+                                        labels=labels, augment_pipe=None,
+                                        )
+                    
+                    #avg_loss = avg_loss + loss #* T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
+                avg_loss = loss
+                #print gradient 
+                #for i,(name, param) in enumerate(netG.model.named_parameters()):
+                #    if i<3 and torch.cuda.current_device() == 0:
+                #        print(name, param.grad, flush=True)
+
+                if netG.loss_fn.use_amp:
+                    netG.scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+                #dev = torch.cuda.current_device()
+                #if dev == 0:
+                #    with torch.no_grad():
+                #        params_test = []
+                #        for i,(name, param) in enumerate(netG.model.named_parameters()):
+                #            g = param.grad.detach().cpu().numpy()
+                #            any_inf = np.any(np.isinf(g))
+                #            any_nan = np.any(np.isnan(g))
+                #            if any_inf or any_nan:
+                #                print(f"[dev:{dev}] -- {name}", flush=True)
+                #        params_test = np.array(params_test)
+                #        #All none?
+                #        print(f"[dev:{dev}] -- any None?", np.any(params_test==None), params_test, flush=True)
+                #        #Any inf?
+                #        #print(f"[dev:{dev}] -- any inf?", np.any(np.isinf(params_test)), flush=True)
+                #        #Any nan?
+                #        #print(f"[dev:{dev}] -- any nan?", np.any(np.isnan(params_test)), flush=True)
+                #torch.distributed.barrier()
+                if netG.loss_fn.use_amp:
+                    netG.scaler.step(netG.optG)
+                    netG.scaler.update()
+                else:
+                    torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
+                    netG.optG.step()
+                
+                netG.ema.update() #Update netG.model with exponential moving average
+                
 
         
-        if (str(device)=="cuda:0") or (str(device)=="cpu"):
-            if False: #i%(len(train_data)//16) == 0:
-                print(f"Batch {i} of {len(train_data)} batches")
+
 
         if one_box_per_epoch:
             break #only do one box for now
@@ -133,54 +161,7 @@ def train_step(netG, epoch, train_dataloader, cut_factor=1, norm_factor = 1., sp
     
     return avg_loss.item(), labels
 
-@torch.no_grad()
-def plot_input(T21, delta, vbv, T21_lr, path=""):
-    batch = T21.shape[0]
-    indices = list(range(0,batch*2,2))
-    
-    fig,axes = plt.subplots(batch*2,4, figsize=(4*5, batch*2*5))
-    for k,(T21_cpu, delta_cpu, vbv_cpu, T21_lr_cpu) in enumerate(zip(T21, delta, vbv, T21_lr)):
-        k = indices[k]
-        T21_cpu = T21_cpu.detach().cpu()
-        delta_cpu = delta_cpu.detach().cpu()
-        vbv_cpu = vbv_cpu.detach().cpu()
-        T21_lr_cpu = T21_lr_cpu.detach().cpu()
 
-        slice_idx = T21_cpu.shape[-3]//2
-        axes[k,0].imshow(T21_cpu[0,slice_idx], vmin=T21_cpu.min().item(), vmax=T21_cpu.max().item())
-        axes[k,0].set_title("T21 HR")
-        axes[k+1,0].hist(T21_cpu[0].flatten(), bins=100, alpha=0.5, label="T21 HR", density=True)
-
-        axes[k,1].imshow(delta_cpu[0,slice_idx], vmin=delta_cpu.min().item(), vmax=delta_cpu.max().item())
-        axes[k,1].set_title("Delta")
-        axes[k+1,1].hist(delta_cpu[0].flatten(), bins=100, alpha=0.5, label="Delta", density=True)
-
-        axes[k,2].imshow(vbv_cpu[0,slice_idx], vmin=vbv_cpu.min().item(), vmax=vbv_cpu.max().item())
-        axes[k,2].set_title("Vbv")
-        axes[k+1,2].hist(vbv_cpu[0].flatten(), bins=100, alpha=0.5, label="Vbv", density=True)
-
-        axes[k,3].imshow(T21_lr_cpu[0,slice_idx], vmin=T21_lr_cpu.min().item(), vmax=T21_lr_cpu.max().item())
-        axes[k,3].set_title("T21 LR")
-        axes[k+1,3].hist(T21_lr_cpu[0].flatten(), bins=100, alpha=0.5, label="T21 LR", density=True)
-        
-    plt.savefig(path)
-    plt.close()
-
-@torch.no_grad()
-def plot_hist(T21_1, T21_2, path="", label="true diff", **kwargs):
-    T21_1 = T21_1.detach().cpu()
-    T21_2 = T21_2.detach().cpu()
-
-    fig,ax = plt.subplots(1,1, figsize=(5,5))
-
-    mean_diff = (T21_1 - T21_2).mean(dim=(1,2,3,4))
-    ax.hist(mean_diff, bins=20, alpha=0.5, label="Mean difference", density=True)
-    ax.set_xlabel(label)
-    # ax.set_xlabel("Mean T21_true - T21_pred [mK]")
-    #ax.set_xlabel("Mean T21_validation before - T21_validation after [mK]")
-    
-    plt.savefig(path)
-    plt.close()
 
 
 
@@ -284,7 +265,7 @@ def sample(rank, world_size, train_models = 56, model_channels = 32, channel_mul
     
     #model_channels = int(fn.split("channels_")[1].split("_")[0])
     #channel_mult = [int(i) for i in fn.split("mult_")[1].split("_")[0].split("-")]
-    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=1, # (for tokens?), augment_dim,
                     model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
@@ -360,8 +341,8 @@ def train(rank,
           cut_factor=1, 
           norm_factor=1., 
           memory_profiling=False, 
-          model_id=1
-          ):
+          model_id=1,
+          **kwargs):
     #train_models = 56
     #model_channels = 8
     #model_id = 3
@@ -384,7 +365,7 @@ def train(rank,
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(16,8,), res_blocks=2, dropout = 0, with_attn=True, image_size=64, dim=3)
     #network_opt = dict(in_channel=4, out_channel=1, inner_channel=32, norm_groups=8, channel_mults=(1, 2, 4, 8, 8), attn_res=(8,), res_blocks=2, dropout = 0, with_attn=True, image_size=32, dim=3)
     #network = UNet
-    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=1, # (for tokens?), augment_dim,
+    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
                     model_channels=model_channels, channel_mult=channel_mult, num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
                     embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
                     )
@@ -424,6 +405,8 @@ def train(rank,
             mp=True,
             rank=rank,
         )
+
+    #if torch.cuda.current_device()==0 and netG.loss_fn.use_amp:  print("Initial statedict: ", netG.scaler.state_dict(), flush=True)
     
     #generate seed to share across GPUs
     if multi_gpu:
@@ -442,14 +425,14 @@ def train(rank,
 
     train_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #train_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/", 
-                                    redshifts=list(range(10,21)), IC_seeds=list(range(0,train_models)), Npix=256, device=device)
-    #train_data_module.getFullDataset()
+                                    redshifts=[10,], IC_seeds=list(range(0,train_models)), Npix=256, device=device)
+    train_data_module.getFullDataset()
     train_sampler = DistributedSampler(dataset=train_data_module, shuffle=True, seed=seed) if multi_gpu else None
     train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=batch_size, shuffle=(train_sampler is None), sampler = train_sampler)#, num_workers=world_size*4)#, pin_memory=True) #rule of thumb 4*num_gpus
 
     validation_data_module = CustomDataset(path_T21="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", path_IC="/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/", 
     #validation_data_module = CustomDataset(path_T21=path+"/outputs/T21_cubes_256/", path_IC=path+"/outputs/IC_cubes_256/",                                                
-                                    redshifts=list(range(10,21)), IC_seeds=list(range(train_models,72)), Npix=256, device=device)
+                                    redshifts=[10,], IC_seeds=list(range(train_models,72)), Npix=256, device=device)
     #validation_data_module.getFullDataset()
     validation_sampler = DistributedSampler(validation_data_module, shuffle=True, seed=seed) if multi_gpu else None
     validation_dataloader = torch.utils.data.DataLoader(validation_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = validation_sampler)#, num_workers=world_size*4)#, pin_memory=True)
@@ -514,6 +497,8 @@ def train(rank,
 
     not_saved = 0
     start_time_training = time.time()
+    #netG.scaler = torch.cuda.amp.GradScaler(enabled=netG.loss_fn.use_amp)
+    #if torch.cuda.current_device()==0 and netG.loss_fn.use_amp:  print("Loaded statedict: ", netG.scaler.state_dict(), flush=True)
     if True:#not (model_channels==8 and train_models==56):
         for e in range(total_epochs): #if False:#       
             
@@ -524,20 +509,24 @@ def train(rank,
                 if multi_gpu:
                     train_sampler.set_epoch(len(netG.loss)) #
 
-                avg_loss, labels = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=True, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
-
+                avg_loss, labels = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=False, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
+                #if e%4==0:  netG.save_network(fn+".pth")
                 if (str(device)=="cuda:0") or (str(device)=="cpu"):
                     print("[{0}]: Epoch {1} in {2:.2f}s | ".format(str(device), len(netG.loss), time.time()-start_time) +
-                        "loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
+                        #"loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
+                        "loss: {0:.4f}, mean(loss[-10:]): {1:.4f}, loss min: {2:.4f}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
                         "learning rate: {0:.3e}, ".format(netG.optG.param_groups[0]['lr']) +
-                        "redshift: {0}".format(labels[0].item()), #labels is tensor([z])
+                        "redshift: {0}".format(labels[0].item() if labels is not None else "None"), #labels is tensor([z])
                         flush=True)
-
+                    
+                    #if netG.loss_fn.use_amp:
+                    #    print("statedict: ", netG.scaler.state_dict(), flush=True)
+                
                 if netG.scheduler is not False:
                     netG.scheduler.step()
 
                 if (str(device)=="cuda:0") and memory_profiling:
-                    torch.cuda.memory._dump_snapshot(f"memory_snap_16_2_{str(device)[-1]}.pickle")
+                    torch.cuda.memory._dump_snapshot(f"memory_snap_16_2_2_2_{str(device)[-1]}.pickle")
                     #prof.step()
             
             
@@ -589,8 +578,8 @@ def train(rank,
 
             
             #every 100 epochs after epoch 2000 save network
-            if len(netG.loss) >= 2000 and len(netG.loss)%100==0:
-                if len(netG.loss) == 2000:
+            if len(netG.loss) >= 1000 and len(netG.loss)%100==0:
+                if len(netG.loss) == 1000:
                     for g in netG.optG.param_groups:
                                 g['lr'] = 1e-4
                 netG.save_network(fn+".pth")
