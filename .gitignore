@@ -16,4 +16,5 @@ slurm*
 *.pickle
 out.txt
 src/SR21cm.egg-info
-configs
+configs/*
+!configs/default.json
