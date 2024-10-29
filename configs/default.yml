@@ -1,0 +1,105 @@
+ 
+name: sr_ffhq
+path:
+    log: logs
+    tb_logger: tb_logger
+    results: results
+    checkpoint: checkpoint
+    resume_state: null
+network_opt:
+    img_resolution: 128
+    in_channels: 4
+    out_channels: 1
+    label_dim: 1
+    model_channels: 8
+    channel_mult:
+        - 1
+        - 2
+        - 4
+        - 8
+        - 16
+    num_blocks: 4
+    attn_resolutions:
+        - 8
+    mid_attn: true
+    embedding_type: positional
+    channel_mult_noise: 1
+    encoder_type: standard
+    resample_filter:
+        - 1
+        - 1
+noise_schedule_opt:
+    schedule_type: VPSDE
+    schedule_opt:
+        timesteps: 1000
+        beta_min: 0.1
+        beta_max: 20.0
+datasets:
+    train:
+        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
+        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        redshifts:
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+        IC_seeds:
+            - 0
+        Npix: 256
+    validation:
+        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
+        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        redshifts:
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+        IC_seeds:
+            - 56
+        Npix: 256
+    test:
+        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
+        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        redshifts:
+            - 10
+            - 11
+            - 12
+            - 13
+            - 14
+            - 15
+            - 16
+            - 17
+            - 18
+            - 19
+            - 20
+            - 21
+        IC_seeds:
+            - 72
+        Npix: 256
+    preproc:
+        normalization: standard
+        noise_params:
+            mean: 0.0
+            std: 1.0
+        augmentation:
+            flip: true
+            rot90: true
+        crop_size: 128
+        crop_position: random
+        crop_padding: 0

@@ -18,3 +18,4 @@ out.txt
 src/SR21cm.egg-info
 configs/*
 !configs/default.json
+!configs/default.yml
