@@ -110,8 +110,7 @@ class GaussianDiffusion(nn.Module):
     def load_network(self, path):
         if self.rank==0:
             print("Loading model!", flush=True)
-        dev = torch.cuda.current_device()
-        loaded_state = torch.load(path, map_location = lambda storage, loc: storage.cuda(dev))
+        loaded_state = torch.load(path, map_location = self.device)
         self.network_opt = loaded_state['network_opt']
         self.model = self.network(**self.network_opt)
         self.model.load_state_dict(loaded_state['model'])
@@ -145,7 +144,6 @@ class GaussianDiffusion(nn.Module):
         except:
             self.scaler = False
             print("Failed to load scaler.", flush=True)
-        #self.set_new_noise_schedule()
 
     
 def weights_init_orthogonal(m):

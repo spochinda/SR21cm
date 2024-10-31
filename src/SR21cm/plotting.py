@@ -26,7 +26,7 @@ def plot_scales(rank, world_size, load_path, **kwargs):
             - save_path (str): The file path to save the generated plots. Default is derived from load_path.
             - rasterized (bool): Whether to rasterize the images. Default is True.
             - slice_idx (int): The index of the slice to plot. Default is 64.
-            - plot_format (str): The format to save the plots. Default is "png".
+            - plot_format (str): The format to save the plots. Default is ".png".
     Returns:
         None
     Notes:
@@ -39,13 +39,13 @@ def plot_scales(rank, world_size, load_path, **kwargs):
     save_path = kwargs.pop("save_path", load_path.split(".")[0])
     rasterized = kwargs.pop("rasterized", True)
     slice_idx = kwargs.pop("slice_idx", 64)
-    plot_format = kwargs.pop("plot_format", "png")
+    plot_format = kwargs.pop("plot_format", ".png")
 
     multi_gpu = world_size >= 1
     if multi_gpu:
         ddp_setup(rank, world_size=world_size)#multi_gpu = world_size > 1
 
-    loaded_state = torch.load(load_path, map_location=torch.device(rank))
+    loaded_state = torch.load(load_path, map_location=torch.device(rank) if multi_gpu else "cpu")
 
     filename = load_path.split("/")[-1].split(".")[0]
 

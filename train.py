@@ -10,8 +10,9 @@ import sys
 import time
 from datetime import datetime, timedelta
 import argparse
+import yaml
 
-#sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
+sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from SR21cm.train import sample, train
 from SR21cm.utils import sample_scales
 from SR21cm.plotting import plot_scales
@@ -38,6 +39,7 @@ if __name__ == "__main__":
     parser.add_argument("--channels", type=int, default=8, help="channels")
     parser.add_argument("--nmodels", type=int, default=1, help="nmodels")
     parser.add_argument("--id", type=int, default=8, help="id") #4
+    parser.add_argument("--config", type=str, default="configs/default.yml", help="config file")
 
     # Parse the command-line arguments
     args = parser.parse_args()
@@ -46,17 +48,19 @@ if __name__ == "__main__":
     channels = args.channels
     nmodels = args.nmodels
     id = args.id
+    config = args.config
+    with open(config, "r") as file:
+        config = yaml.safe_load(file)
 
     
-    print("PyTorch version: ", torch.__version__)
-    print("CUDA version: ", torch.version.cuda)
-   
+
     world_size = torch.cuda.device_count()
     multi_gpu = world_size > 1
 
     
-
+    print("PyTorch version: ", torch.__version__, flush=True)
     if multi_gpu:
+        print("CUDA version: ", torch.version.cuda)
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
@@ -75,10 +79,15 @@ if __name__ == "__main__":
             mp.spawn(sample_scales, 
                      args=(
                          world_size,
-                         "/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
+                         "/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",#"/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
                          ),
                      nprocs=world_size)
-            mp.spawn(plot_scales, args=(world_size, "T21_scales_",), nprocs=world_size)
+            mp.spawn(plot_scales, 
+                     args=(
+                         world_size, 
+                         "/Users/simonpochinda/Documents/PhD/SR21cm/analysis/model_6/T21_scales_0.pth", #"/Users/simonpochinda/Documents/PhD/SR21cm/analysis/model_6/T21_scales_0.pth",
+                         ), 
+                     nprocs=world_size)
             print(f"Sampling scales and plotting took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
 
             #cut_factor = 0 #sample 256
@@ -88,14 +97,9 @@ if __name__ == "__main__":
             #print(f"Sampling took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
     else:
         print("Not using multi_gpu",flush=True)
-        try:
-            train(rank=0, world_size=0, total_epochs=1, batch_size=1, train_models=56, model_channels=4, channel_mult=[1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=4)#2*4)
-        except KeyboardInterrupt:
-            print('Interrupted', flush=True)
-            try:
-                sys.exit(130)
-            except SystemExit:
-                os._exit(130)
-    
+        #train(rank=0, world_size=world_size, total_epochs=1, batch_size=1, train_models=56, model_channels=4, channel_mult=[1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=4)#2*4)    
+        train(rank=0, world_size=world_size, config=config, memory_profiling=False, model_id=4)#2*4)    
+        #sample_scales(rank=0, world_size=world_size, model_path="/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth")
+        #plot_scales(rank=0, world_size=world_size, load_path="/Users/simonpochinda/Documents/PhD/SR21cm/analysis/model_6/T21_scales_0.pth")
         
  

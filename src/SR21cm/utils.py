@@ -10,6 +10,7 @@ from tqdm import tqdm
 import numpy as np
 from scipy.io import loadmat
 import pandas as pd
+import yaml
 
 
 from .model_edm import SongUNet
@@ -32,7 +33,8 @@ def ddp_setup(rank: int, world_size: int):
 class CustomDataset(torch.utils.data.Dataset):
     def __init__(self, path_T21, path_IC, 
                  redshifts=[10,], IC_seeds=list(range(1000,1008)), 
-                 Npix=256, growth_factor=False, device='cpu'):
+                 Npix=256, batch_size=1, load_full_dataset=False,
+                 growth_factor=False, device='cpu'):
         self.device = device
         self.path_T21 = path_T21
         self.path_IC = path_IC
@@ -40,14 +42,16 @@ class CustomDataset(torch.utils.data.Dataset):
         self.redshifts = redshifts
         self.IC_seeds = IC_seeds
         self.Npix = Npix
-
+        self.batch_size = batch_size
+        self.load_full_dataset = load_full_dataset
+        self.df = self.getDataFrame()
+        
         if growth_factor:
             self.g = get_growth_factor(device=device)
-        
-        self.df = self.getDataFrame()
-            
-        #self.labels = pd.read_csv(annotations_file)
-        #self.img_dir = img_dir
+
+        if load_full_dataset:
+            self.dataset = self.getFullDataset()
+
 
     def __len__(self):
         return len(self.df)
@@ -429,8 +433,23 @@ def invert_normalization(x, mode="standard", **kwargs):
         x = ((x + 1) * (x_max - x_min) / 2 ) + x_min
         return x
 
-
-
+@torch.no_grad()
+def data_preprocess(T21, delta, vbv, cut_factor=0, scale_factor=4, norm_factor=1., n_augment=1, **kwargs):
+    T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
+    delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
+    vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
+    T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/scale_factor, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
+                
+    T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+    T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+    T21_lr = torch.nn.Upsample(scale_factor=scale_factor, mode='trilinear')(T21_lr)
+    
+    T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=norm_factor)#, factor=2.)
+    T21, _,_ = normalize(T21, mode="standard", factor=norm_factor, x_mean=T21_lr_mean, x_std=T21_lr_std)
+    delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)
+    vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)
+    T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=n_augment) #support device
+    return T21, delta, vbv, T21_lr #, T21_lr_mean, T21_lr_std
 
 @torch.no_grad()
 def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, 
@@ -559,9 +578,14 @@ def sample_scales(rank, world_size, model_path, **kwargs):
         - Saves the original and predicted T21 cubes to a dictionary and saves it to disk.
     """
     save_path = kwargs.pop("save_path", model_path.split(".")[0])
-    one_box = kwargs.pop("one_box", False)
-
-    ddp_setup(rank, world_size=world_size)#multi_gpu = world_size > 1
+    one_box = kwargs.pop("one_box", True)
+    
+    multi_gpu = world_size >= 1
+    if multi_gpu:
+        device = torch.device(f'cuda:{rank}')
+        ddp_setup(rank, world_size=world_size)#multi_gpu = world_size > 1
+    else:
+        device = torch.device('cpu')
 
     network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
                     model_channels=8, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
@@ -597,13 +621,13 @@ def sample_scales(rank, world_size, model_path, **kwargs):
     T21_dict = {}
     for key1,key2,cut in zip(["T21_512", "T21_256", "T21_128"],["T21_pred_512", "T21_pred_256", "T21_pred_128"],[0,1,2]):
         T21 = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/T21_cube_z10__Npix512_IC0.mat")["Tlin"]
-        T21 = torch.from_numpy(T21).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=rank)
+        T21 = torch.from_numpy(T21).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=device)
 
         delta = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/delta_Npix512_IC0.mat")["delta"]
-        delta = torch.from_numpy(delta).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=rank)
+        delta = torch.from_numpy(delta).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=device)
 
         vbv = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/vbv_Npix512_IC0.mat")["vbv"]
-        vbv = torch.from_numpy(vbv).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=rank)
+        vbv = torch.from_numpy(vbv).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=device)
 
 
         T21 = get_subcubes(cubes=T21, cut_factor=cut)
@@ -629,7 +653,7 @@ def sample_scales(rank, world_size, model_path, **kwargs):
         #print("networkopt", netG.network_opt["label_dim"], flush=True)
         #torch.distributed.barrier()
 
-        T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if torch.cuda.current_device() == 0 else False)[:,-1:].to(device=rank)
+        T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if device.index == 0 or device.type == 'cpu' else False)[:,-1:].to(device=device)
         T21_pred = invert_normalization(T21_pred, mode="standard", factor=1., x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
         T21 = invert_normalization(T21, mode="standard", factor=1., x_mean = T21_lr_mean, x_std = T21_lr_std)
 
@@ -642,5 +666,52 @@ def sample_scales(rank, world_size, model_path, **kwargs):
 
     torch.save(T21_dict, save_path+f"T21_scales_{netG.model_name}_rank_{rank}.pth")
 
+    if multi_gpu:
+        destroy_process_group()
 
-    destroy_process_group()
+def initialize_model_directory(rank, config):
+    path = config["path"]
+    model_name = config["name"].split(".")[0]
+    model_dir = os.path.join(path, model_name)
+    plot_dir = os.path.join(model_dir, "plots")
+    data_dir = os.path.join(model_dir, "data")
+    model_path = os.path.join(model_dir, config["name"])
+    config_path = os.path.join(model_dir, "config.yml")
+    if not os.path.exists(model_dir):
+        if rank==0:
+            os.makedirs(model_dir)
+            os.makedirs(plot_dir)
+            os.makedirs(data_dir)
+            #save config file
+            with open(config_path, 'w') as file:
+                yaml.dump(config, file)
+    else:
+        if not os.path.exists(plot_dir):
+            if rank==0:
+                os.makedirs(plot_dir)
+        if not os.path.exists(data_dir):
+            if rank==0:
+                os.makedirs(data_dir)
+        #if config exists
+        if not os.path.exists(config_path):
+            #save config
+            if rank==0:
+                with open(config_path, 'w') as file:
+                    yaml.dump(config, file)
+        else:
+            with open(config_path, 'r') as file:
+                config = yaml.safe_load(file)
+        
+        #does model_path exist
+        #if os.path.exists(model_path):
+        #    try:
+        #        netG.load_network(model_path)
+        #        if rank==0:
+        #            print(f"Loaded network at {model_path}", flush=True)
+        #    except:
+        #        if rank==0:
+        #            print(f"Error loading network at {model_path}. Starting from scratch.", flush=True)                
+        #else:
+        #    if rank==0:
+        #        print(f"No model file found at {model_path}. Starting from scratch.", flush=True)
+    return config, model_name, model_path, model_dir, plot_dir, data_dir

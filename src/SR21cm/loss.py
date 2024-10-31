@@ -22,7 +22,7 @@ class VPLoss:
         x = torch.cat([perturbed_data, *conditionals], dim = 1)
         #with torch.cuda.amp.autocast() if self.use_amp else nullcontext():
         with torch.cuda.amp.autocast(enabled=self.use_amp) if self.use_amp else nullcontext():
-            score = net.model(x=x, noise_labels=t.flatten(), class_labels=labels, augment_labels=None) # 999 from wrapper get_score_fn
+            score = net.model(x=x, noise_labels=t.flatten(), class_labels=labels, augment_labels=None) # torch.randn_like(conditionals[0])
             score = -score / std #from wrapper get_score_fn
             loss = torch.square(score * std + z)
             loss = torch.sum(loss, dim=(1,2,3,4)) / volume #average loss per pixel

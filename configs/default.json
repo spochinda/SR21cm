@@ -31,21 +31,21 @@
         "train": {
             "path_T21": "/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", 
             "path_IC": "/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/",
-            "redshifts": [10,11,12,13, 14,15,16,17, 18,19,20,21], 
+            "redshifts": [10], 
             "IC_seeds": [0], 
             "Npix": 256
         },
         "validation": {
             "path_T21": "/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", 
             "path_IC": "/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/",
-            "redshifts": [10,11,12,13, 14,15,16,17, 18,19,20,21], 
+            "redshifts": [10], 
             "IC_seeds": [56], 
             "Npix": 256
         },
         "test": {
             "path_T21": "/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/", 
             "path_IC": "/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/",
-            "redshifts": [10,11,12,13, 14,15,16,17, 18,19,20,21], 
+            "redshifts": [10], 
             "IC_seeds": [72], 
             "Npix": 256
         },

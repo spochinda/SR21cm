@@ -1,16 +1,12 @@
  
-name: sr_ffhq
-path:
-    log: logs
-    tb_logger: tb_logger
-    results: results
-    checkpoint: checkpoint
-    resume_state: null
+name: DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth #DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_4_normfactor1.pth
+path: /Users/simonpochinda/Documents/PhD/SR21cm/trained_models/
+total_epochs: 1 #000
 network_opt:
     img_resolution: 128
     in_channels: 4
     out_channels: 1
-    label_dim: 1
+    label_dim: 0
     model_channels: 8
     channel_mult:
         - 1
@@ -32,74 +28,47 @@ noise_schedule_opt:
     schedule_type: VPSDE
     schedule_opt:
         timesteps: 1000
-        beta_min: 0.1
         beta_max: 20.0
+        beta_min: 0.1
+loss_opt:
+    beta_max: 20.0
+    beta_min: 0.1
+    epsilon: 1.e-05
+    use_amp: true #false
+seed: 0
 datasets:
     train:
-        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
-        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        path_T21: /Users/simonpochinda/Documents/PhD/SR21cm/outputs/T21_256/ #/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
+        path_IC: /Users/simonpochinda/Documents/PhD/SR21cm/outputs/IC_256/ #/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
         redshifts:
             - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
         IC_seeds:
             - 0
         Npix: 256
+        batch_size: 1
+        load_full_dataset: false
     validation:
-        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
-        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        path_T21: /Users/simonpochinda/Documents/PhD/SR21cm/outputs/T21_256/ #/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
+        path_IC: /Users/simonpochinda/Documents/PhD/SR21cm/outputs/IC_256/ #/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
         redshifts:
             - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
         IC_seeds:
             - 56
         Npix: 256
+        batch_size: 1
+        load_full_dataset: false
     test:
-        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
-        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        path_T21: /Users/simonpochinda/Documents/PhD/SR21cm/outputs/T21_256/ #/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
+        path_IC: /Users/simonpochinda/Documents/PhD/SR21cm/outputs/IC_256/ #/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
         redshifts:
             - 10
-            - 11
-            - 12
-            - 13
-            - 14
-            - 15
-            - 16
-            - 17
-            - 18
-            - 19
-            - 20
-            - 21
         IC_seeds:
             - 72
         Npix: 256
-    preproc:
-        normalization: standard
-        noise_params:
-            mean: 0.0
-            std: 1.0
-        augmentation:
-            flip: true
-            rot90: true
-        crop_size: 128
-        crop_position: random
-        crop_padding: 0
+        batch_size: 1
+        load_full_dataset: false
+data_preprocess:
+    cut_factor: 0
+    scale_factor: 4
+    norm_factor: 1.0
+    n_augmentation: 1
