@@ -2,8 +2,6 @@ import torch
 import torch.distributed
 import torch.utils
 import torch.multiprocessing as mp
-from torch.utils.data.distributed import DistributedSampler
-from torch.distributed import init_process_group, destroy_process_group
 
 import os
 import sys
@@ -14,22 +12,8 @@ import yaml
 
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
 from SR21cm.train import sample, train
-from SR21cm.utils import sample_scales
+from SR21cm.utils import sample_scales, get_paths
 from SR21cm.plotting import plot_scales
-
-def ddp_setup(rank: int, world_size: int):
-    try:
-        os.environ["MASTER_ADDR"] #check if master address exists
-        print("Found master address: ", os.environ["MASTER_ADDR"])
-    except:
-        print("Did not find master address variable. Setting manually...")
-        os.environ["MASTER_ADDR"] = "localhost"
-
-    
-    os.environ["MASTER_PORT"] = "2594"#"12355" 
-    torch.cuda.set_device(rank)
-    init_process_group(backend="gloo", rank=rank, world_size=world_size) #backend gloo for cpus? nccl for gpus
-
 
 if __name__ == "__main__":
     # Create an ArgumentParser object
@@ -51,6 +35,7 @@ if __name__ == "__main__":
     config = args.config
     with open(config, "r") as file:
         config = yaml.safe_load(file)
+    
 
     
 
@@ -64,31 +49,45 @@ if __name__ == "__main__":
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
-
-        for channel,n_models,id in zip([channels,], [nmodels,], [id,]): #[8,8,4], [56,28,28], [3,2,3,3]
-            print(f"Training with {channel} channels and {n_models} models and {id} id", flush=True)
-            
+        
+        name = config["name"]
+        for i in range(id+1,id+5):
+            print(f"Training {i}...", flush=True)
+        
+            config["name"] = name + f"_{i}"
             
             training_time = time.time()
             cut_factor = 0 #train on 128 or 256
-            mp.spawn(train, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
-            print(f"Training with {n_models} models and {channel} channels took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
+            if i != 0 and i != 5 and i != 10:
+                mp.spawn(train, 
+                            args=(
+                                world_size, 
+                                config, 
+                                False, #memory_profiling
+                                ), 
+                            nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+                #mp.spawn(train, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
+                print(f"Training took {(time.time()-training_time)/3600:.2f}hrs", flush=True)
             
-            print("Sampling scales...", flush=True)
-            sampling_time = time.time()
-            mp.spawn(sample_scales, 
-                     args=(
-                         world_size,
-                         "/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",#"/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
-                         ),
-                     nprocs=world_size)
+                print("Sampling scales...", flush=True)
+                sampling_time = time.time()
+                mp.spawn(sample_scales, 
+                            args=(
+                                world_size,
+                                config, #"/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
+                                ),
+                            nprocs=world_size)
+                print(f"Sampling scales and plotting took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
+                
+            model_path, model_dir, plot_dir, data_dir = get_paths(config)
             mp.spawn(plot_scales, 
-                     args=(
-                         world_size, 
-                         "/Users/simonpochinda/Documents/PhD/SR21cm/analysis/model_6/T21_scales_0.pth", #"/Users/simonpochinda/Documents/PhD/SR21cm/analysis/model_6/T21_scales_0.pth",
-                         ), 
-                     nprocs=world_size)
-            print(f"Sampling scales and plotting took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
+                        args=(
+                            world_size, 
+                            data_dir,
+                            plot_dir,
+                            ), 
+                        nprocs=world_size)
+            
 
             #cut_factor = 0 #sample 256
             #print(f"Sampling all {256//2**cut_factor}...", flush=True)

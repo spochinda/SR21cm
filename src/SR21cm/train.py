@@ -5,7 +5,7 @@ import torch.utils
 from torch.utils.data.distributed import DistributedSampler
 from torch.distributed import init_process_group, destroy_process_group
 
-from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, sample_model_v3, initialize_model_directory, data_preprocess
+from .utils import CustomDataset, get_subcubes, normalize, invert_normalization, augment_dataset, calculate_power_spectrum, sample_model_v3, initialize_model_directory, data_preprocess, get_paths
 from .plotting import plot_sigmas, plot_input, plot_hist
 from .diffusion import GaussianDiffusion
 from .model_edm import SongUNet
@@ -27,8 +27,7 @@ def ddp_setup(rank: int, world_size: int):
         print("Did not find master address variable. Setting manually...")
         os.environ["MASTER_ADDR"] = "localhost"
 
-    
-    os.environ["MASTER_PORT"] = "2594"#"12355" 
+    os.environ["MASTER_PORT"] = "2595"#"12355" 
     torch.cuda.set_device(rank)
     init_process_group(backend="gloo", rank=rank, world_size=world_size) #backend gloo for cpus? nccl for gpus
 
@@ -74,7 +73,7 @@ def train_step(netG, train_dataloader, config,
             #T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=1) #support device
 
             config["data_preprocess"]["cut_factor"] = cut #manually set cut factor
-            T21, delta, vbv, T21_lr = data_preprocess(T21=T21_, delta=delta_, vbv=vbv_, **config["data_preprocess"])
+            T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std = data_preprocess(T21=T21_, delta=delta_, vbv=vbv_, **config["data_preprocess"])
 
             netG.optG.zero_grad()
             if False:#split_batch: #split subcube minibatch into smaller mini-batches for memory
@@ -106,7 +105,7 @@ def train_step(netG, train_dataloader, config,
                 loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr], labels=labels, augment_pipe=None,
                                         )
                     
-                avg_loss = avg_loss + loss * T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
+                avg_loss = avg_loss + loss #* T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
                 #avg_loss = loss
                 #print gradient 
                 #for i,(name, param) in enumerate(netG.model.named_parameters()):
@@ -346,7 +345,7 @@ def train(rank,
           #cut_factor=1, #training_opt
           #norm_factor=1., #training_opt
           memory_profiling=False, 
-          model_id=1,
+          #model_id=1,
           **kwargs):
     #train_models = 56
     #model_channels = 8
@@ -361,7 +360,6 @@ def train(rank,
     else:
         device = torch.device("cpu")
     
-
 
     #optimizer and model
     path = "/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages" + "/SR21cm"
@@ -401,7 +399,6 @@ def train(rank,
     
     #loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False)
     loss_fn = VPLoss(config["loss_opt"])
-    
     netG = GaussianDiffusion(
             network=network,
             network_opt=network_opt,
@@ -412,14 +409,14 @@ def train(rank,
             mp=True,
             rank=rank,
         )
-
     #if torch.cuda.current_device()==0 and netG.loss_fn.use_amp:  print("Initial statedict: ", netG.scaler.state_dict(), flush=True)
     
     #generate seed to share across GPUs
     if multi_gpu:
-        seed = torch.randint(0, 1420, (1,)) if config["seed"] is None else config["seed"]
+        seed = torch.randint(0, 1420, (1,)) if config["seed"] is None else torch.tensor(config["seed"])
         torch.distributed.barrier()
         torch.distributed.broadcast(tensor=seed, src=0)
+        seed = seed.item()
     if False:#multi_gpu:
         #if torch.cuda.current_device()==0:
         seed = torch.randint(0, 1420, (1,))
@@ -453,8 +450,7 @@ def train(rank,
     #                                redshifts=[10,], IC_seeds=list(range(72,80)), Npix=256, device=device)
     #test_sampler = DistributedSampler(test_data_module) if multi_gpu else None
     #test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=batch_size, shuffle=False if multi_gpu else True, sampler = test_sampler)#, num_workers=world_size*4)#, pin_memory=True)
-    
-    train_data_module = CustomDataset(**config["datasets"]["train"])
+    train_data_module = CustomDataset(**config["datasets"]["train"], device=device)
     train_sampler = DistributedSampler(dataset=train_data_module, shuffle=True, seed=seed) if multi_gpu else None
     train_dataloader = torch.utils.data.DataLoader(train_data_module, batch_size=train_data_module.batch_size, shuffle=(train_sampler is None), sampler = train_sampler)#, num_workers=world_size*4)#, pin_memory=True) #rule of thumb 4*num_gpus
     
@@ -468,7 +464,8 @@ def train(rank,
     test_dataloader = torch.utils.data.DataLoader(test_data_module, batch_size=test_data_module.batch_size, shuffle=False if multi_gpu else True, sampler = test_sampler)#, num_workers=world_size*4)#, pin_memory=True)
 
     """    
-    config, model_name, model_path, model_dir, plot_dir, data_dir = initialize_model_directory(rank, config)
+
+    config, model_path = initialize_model_directory(rank, config)
 
     if os.path.exists(model_path):
         try:
@@ -481,7 +478,8 @@ def train(rank,
     else:
         if rank==0:
             print(f"Model path does not exists at {model_path}. Starting from scratch.", flush=True)
-
+    
+    model_path, model_dir, plot_dir, data_dir = get_paths(config)
 
     
 
@@ -550,10 +548,9 @@ def train(rank,
         if True:
             if multi_gpu:
                 train_sampler.set_epoch(len(netG.loss)) #
-
             #avg_loss, labels = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=False, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
             avg_loss, labels = train_step(netG=netG, train_dataloader=train_dataloader, config=config, device=device, multi_gpu = multi_gpu)
-            #if e%4==0:  netG.save_network(fn+".pth")
+            #if e%4==0:  netG.save_network(model_path)
             if device.index==0 or device.type=="cpu":
                 print("[{0}]: Epoch {1} in {2:.2f}s | ".format(device.type, len(netG.loss), time.time()-start_time) +
                     #"loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
@@ -569,7 +566,8 @@ def train(rank,
                 netG.scheduler.step()
 
             if device.index==0 and memory_profiling:
-                torch.cuda.memory._dump_snapshot(f"memory_snap_16_2_2_2_{str(device)[-1]}.pickle")
+                memory_path = os.path.join(data_dir, "memory_snap.pickle")
+                torch.cuda.memory._dump_snapshot(memory_path)
                 #prof.step()
         
         
@@ -625,7 +623,7 @@ def train(rank,
         #if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
         #    if rank==0:
         #        print("No improvement in 20 validation tests. Saving test data...", flush=True)
-        if (time.time()-start_time_training > 12*60*60):
+        if (time.time()-start_time_training > 3*60*60):
             if rank==0:
                 print("12 hours passed. Aborting training...", flush=True)
             break

@@ -275,62 +275,61 @@ def random_rotations(x, n=1):
 
 @torch.no_grad()
 def augment_dataset(T21, delta, vbv, T21_lr=None, n=8, broadcast=False):
-    #dataset_x1 = []
-    #dataset_x2 = []
-    #dataset_x3 = []
-    #dataset_x4 = []
-    dataset_T21 = torch.empty(0,1, T21.shape[2], T21.shape[3], T21.shape[4], device=T21.device)
-    dataset_delta = torch.empty(0,1, delta.shape[2], delta.shape[3], delta.shape[4], device=delta.device)
-    dataset_vbv = torch.empty(0,1, vbv.shape[2], vbv.shape[3], vbv.shape[4], device=vbv.device)
-    if T21_lr is not None:
-        dataset_T21_lr = torch.empty(0,1, T21_lr.shape[2], T21_lr.shape[3], T21_lr.shape[4], device=T21_lr.device)
-    #for i,(x1,x2,x3,x4) in enumerate(zip(T21, delta, vbv, T21_lr)):
-    for i in range(T21.shape[0]):
-        #x1 = x1.unsqueeze(0)
-        #x2 = x2.unsqueeze(0)
-        #x3 = x3.unsqueeze(0)
-        #x4 = x4.unsqueeze(0)
-        T21_i = T21[i].unsqueeze(0)
-        delta_i = delta[i].unsqueeze(0)
-        vbv_i = vbv[i].unsqueeze(0)
+    if n == 0:
+        return T21, delta, vbv, T21_lr
+    elif n>0 and n<24:
+        dataset_T21 = torch.empty(0,1, T21.shape[2], T21.shape[3], T21.shape[4], device=T21.device)
+        dataset_delta = torch.empty(0,1, delta.shape[2], delta.shape[3], delta.shape[4], device=delta.device)
+        dataset_vbv = torch.empty(0,1, vbv.shape[2], vbv.shape[3], vbv.shape[4], device=vbv.device)
         if T21_lr is not None:
-            T21_lr_i = T21_lr[i].unsqueeze(0)
+            dataset_T21_lr = torch.empty(0,1, T21_lr.shape[2], T21_lr.shape[3], T21_lr.shape[4], device=T21_lr.device)
+        #for i,(x1,x2,x3,x4) in enumerate(zip(T21, delta, vbv, T21_lr)):
+        for i in range(T21.shape[0]):
+            #x1 = x1.unsqueeze(0)
+            #x2 = x2.unsqueeze(0)
+            #x3 = x3.unsqueeze(0)
+            #x4 = x4.unsqueeze(0)
+            T21_i = T21[i].unsqueeze(0)
+            delta_i = delta[i].unsqueeze(0)
+            vbv_i = vbv[i].unsqueeze(0)
+            if T21_lr is not None:
+                T21_lr_i = T21_lr[i].unsqueeze(0)
 
-        N = np.random.choice(np.arange(0,24), size=n,replace=False)
-        N = torch.tensor(N, device=T21_i.device)
-        if broadcast:
-            torch.distributed.broadcast(N, src=0)
-        #print(f"Rank {torch.cuda.current_device()} N: {N}", flush=True)
-        #rotations_x1 = all_rotations(x1)[N]
-        #rotations_x2 = all_rotations(x2)[N]
-        #rotations_x3 = all_rotations(x3)[N]
-        #rotations_x4 = all_rotations(x4)[N]
-        T21_i = all_rotations(T21_i)[N]
-        delta_i = all_rotations(delta_i)[N]
-        vbv_i = all_rotations(vbv_i)[N]
-        if T21_lr is not None:
-            T21_lr_i = all_rotations(T21_lr_i)[N]
+            N = np.random.choice(np.arange(0,24), size=n,replace=False)
+            N = torch.tensor(N, device=T21_i.device)
+            if broadcast:
+                torch.distributed.broadcast(N, src=0)
+            #print(f"Rank {torch.cuda.current_device()} N: {N}", flush=True)
+            #rotations_x1 = all_rotations(x1)[N]
+            #rotations_x2 = all_rotations(x2)[N]
+            #rotations_x3 = all_rotations(x3)[N]
+            #rotations_x4 = all_rotations(x4)[N]
+            T21_i = all_rotations(T21_i)[N]
+            delta_i = all_rotations(delta_i)[N]
+            vbv_i = all_rotations(vbv_i)[N]
+            if T21_lr is not None:
+                T21_lr_i = all_rotations(T21_lr_i)[N]
 
-        #dataset_x1.append(rotations_x1)
-        #dataset_x2.append(rotations_x2)
-        #dataset_x3.append(rotations_x3)
-        #dataset_x4.append(rotations_x4)
-        dataset_T21 = torch.cat([dataset_T21, T21_i], dim=0)
-        dataset_delta = torch.cat([dataset_delta, delta_i], dim=0)
-        dataset_vbv = torch.cat([dataset_vbv, vbv_i], dim=0)
-        if T21_lr is not None:
-            dataset_T21_lr = torch.cat([dataset_T21_lr, T21_lr_i], dim=0)
-        else:
-            dataset_T21_lr = None
+            #dataset_x1.append(rotations_x1)
+            #dataset_x2.append(rotations_x2)
+            #dataset_x3.append(rotations_x3)
+            #dataset_x4.append(rotations_x4)
+            dataset_T21 = torch.cat([dataset_T21, T21_i], dim=0)
+            dataset_delta = torch.cat([dataset_delta, delta_i], dim=0)
+            dataset_vbv = torch.cat([dataset_vbv, vbv_i], dim=0)
+            if T21_lr is not None:
+                dataset_T21_lr = torch.cat([dataset_T21_lr, T21_lr_i], dim=0)
+            else:
+                dataset_T21_lr = None
 
+            
+        #T21 = torch.cat(dataset_x1,dim=0)
+        #delta = torch.cat(dataset_x2,dim=0)
+        #vbv = torch.cat(dataset_x3,dim=0)
+        #T21_lr = torch.cat(dataset_x4,dim=0)
         
-    #T21 = torch.cat(dataset_x1,dim=0)
-    #delta = torch.cat(dataset_x2,dim=0)
-    #vbv = torch.cat(dataset_x3,dim=0)
-    #T21_lr = torch.cat(dataset_x4,dim=0)
-    
-    #return T21, delta, vbv, T21_lr
-    return dataset_T21, dataset_delta, dataset_vbv, dataset_T21_lr
+        #return T21, delta, vbv, T21_lr
+        return dataset_T21, dataset_delta, dataset_vbv, dataset_T21_lr
 
 def calculate_power_spectrum(data_x, Lpix=3, kbins=100, dsq = False, method="torch", device="cpu"):
     #Simulation box variables
@@ -435,21 +434,27 @@ def invert_normalization(x, mode="standard", **kwargs):
 
 @torch.no_grad()
 def data_preprocess(T21, delta, vbv, cut_factor=0, scale_factor=4, norm_factor=1., n_augment=1, **kwargs):
+    one_box = kwargs.pop("one_box", False)
+
     T21 = get_subcubes(cubes=T21, cut_factor=cut_factor)
     delta = get_subcubes(cubes=delta, cut_factor=cut_factor)
     vbv = get_subcubes(cubes=vbv, cut_factor=cut_factor)
+    if one_box:
+            T21 = T21[:1]
+            delta = delta[:1]
+            vbv = vbv[:1]
     T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/scale_factor, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
                 
     T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
     T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
     T21_lr = torch.nn.Upsample(scale_factor=scale_factor, mode='trilinear')(T21_lr)
     
-    T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=norm_factor)#, factor=2.)
+    T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=norm_factor)
     T21, _,_ = normalize(T21, mode="standard", factor=norm_factor, x_mean=T21_lr_mean, x_std=T21_lr_std)
     delta, _,_ = normalize(delta, mode="standard", factor=norm_factor)
     vbv, _,_ = normalize(vbv, mode="standard", factor=norm_factor)
-    T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=n_augment) #support device
-    return T21, delta, vbv, T21_lr #, T21_lr_mean, T21_lr_std
+    T21, delta, vbv , T21_lr = augment_dataset(T21, delta, vbv, T21_lr, n=n_augment)
+    return T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std
 
 @torch.no_grad()
 def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, 
@@ -558,7 +563,7 @@ def sample_model_v3(rank, netG, dataloader, cut_factor=1, norm_factor = 1., augm
 
 
 @torch.no_grad()
-def sample_scales(rank, world_size, model_path, **kwargs):
+def sample_scales(rank, world_size, config, **kwargs):
     """
     Samples scales of T21 cubes using a Gaussian Diffusion model.
     Args:
@@ -577,7 +582,8 @@ def sample_scales(rank, world_size, model_path, **kwargs):
         - Uses the Gaussian Diffusion model to sample new T21 cubes.
         - Saves the original and predicted T21 cubes to a dictionary and saves it to disk.
     """
-    save_path = kwargs.pop("save_path", model_path.split(".")[0])
+    model_path, model_dir, plot_dir, data_dir = get_paths(config)
+    
     one_box = kwargs.pop("one_box", True)
     
     multi_gpu = world_size >= 1
@@ -587,19 +593,20 @@ def sample_scales(rank, world_size, model_path, **kwargs):
     else:
         device = torch.device('cpu')
 
-    network_opt = dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
-                    model_channels=8, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
-                    embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
-                    )
+    network_opt = config["network_opt"]
+    #dict(img_resolution=128, in_channels=4, out_channels=1, label_dim=0, # (for tokens?), augment_dim,
+    #                model_channels=8, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[8], mid_attn=True, #channel_mult_emb, num_blocks, attn_resolutions, dropout, label_dropout,
+    #                embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
+    #                )
     
     network = SongUNet
     
     #noise_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
     #noise_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
     #noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
-    noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
+    noise_schedule_opt = config["noise_schedule_opt"]#{'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
     
-    loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False)
+    loss_fn = VPLoss(config["loss_opt"])#VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False)
     
     netG = GaussianDiffusion(
             network=network,
@@ -616,7 +623,7 @@ def sample_scales(rank, world_size, model_path, **kwargs):
     
     netG.load_network(model_path)
 
-    netG.model_name = model_path.split("/")[-1].split(".")[0]
+    #netG.model_name = config["name"].split(".")[0]
 
     T21_dict = {}
     for key1,key2,cut in zip(["T21_512", "T21_256", "T21_128"],["T21_pred_512", "T21_pred_256", "T21_pred_128"],[0,1,2]):
@@ -629,31 +636,33 @@ def sample_scales(rank, world_size, model_path, **kwargs):
         vbv = loadmat("/home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/vbv_Npix512_IC0.mat")["vbv"]
         vbv = torch.from_numpy(vbv).to(torch.float32).unsqueeze(0).unsqueeze(0).to(device=device)
 
+        config["data_preprocess"]["cut_factor"] = cut
+        config["data_preprocess"]["n_augment"] = 1
+        T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std = data_preprocess(T21=T21, delta=delta, vbv=vbv, one_box=one_box, **config["data_preprocess"])
+        #T21 = get_subcubes(cubes=T21, cut_factor=cut)
+        #delta = get_subcubes(cubes=delta, cut_factor=cut)
+        #vbv = get_subcubes(cubes=vbv, cut_factor=cut)
+        #if one_box:
+        #    T21 = T21[:1]
+        #    delta = delta[:1]
+        #    vbv = vbv[:1]
+        #T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/scale_factor, mode='trilinear')
 
-        T21 = get_subcubes(cubes=T21, cut_factor=cut)
-        delta = get_subcubes(cubes=delta, cut_factor=cut)
-        vbv = get_subcubes(cubes=vbv, cut_factor=cut)
-        if one_box:
-            T21 = T21[:1]
-            delta = delta[:1]
-            vbv = vbv[:1]
-        T21_lr = torch.nn.functional.interpolate(T21, scale_factor=1/4, mode='trilinear')#get_subcubes(cubes=T21_lr, cut_factor=cut_factor)
-                    
-        T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
-        T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
-        T21_lr = torch.nn.Upsample(scale_factor=4, mode='trilinear')(T21_lr)
+        #T21_lr_mean = torch.mean(T21_lr, dim=(1,2,3,4), keepdim=True)
+        #T21_lr_std = torch.std(T21_lr, dim=(1,2,3,4), keepdim=True)
+        #T21_lr = torch.nn.Upsample(scale_factor=scale_factor, mode='trilinear')(T21_lr)
         
-        T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=1.)#, factor=2.)
-        T21, _,_ = normalize(T21, mode="standard", factor=1., x_mean=T21_lr_mean, x_std=T21_lr_std)
-        delta, _,_ = normalize(delta, mode="standard", factor=1.)
-        vbv, _,_ = normalize(vbv, mode="standard", factor=1.)
+        #T21_lr, _,_ = normalize(T21_lr, mode="standard", factor=1.)
+        #T21, _,_ = normalize(T21, mode="standard", factor=1., x_mean=T21_lr_mean, x_std=T21_lr_std)
+        #delta, _,_ = normalize(delta, mode="standard", factor=1.)
+        #vbv, _,_ = normalize(vbv, mode="standard", factor=1.)
 
         labels = None
 
         #print("networkopt", netG.network_opt["label_dim"], flush=True)
         #torch.distributed.barrier()
 
-        T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, use_amp=False, clip_denoised=False, verbose=True if device.index == 0 or device.type == 'cpu' else False)[:,-1:].to(device=device)
+        T21_pred = netG.sample.Euler_Maruyama_sampler(netG=netG, x_lr=T21_lr, conditionals=[delta, vbv], class_labels=labels, num_steps=100, eps=1e-3, use_amp=config["loss_opt"]["use_amp"], clip_denoised=False, verbose=True if device.index == 0 or device.type == 'cpu' else False)[:,-1:].to(device=device)
         T21_pred = invert_normalization(T21_pred, mode="standard", factor=1., x_mean = T21_lr_mean, x_std = T21_lr_std)#, factor=2.)
         T21 = invert_normalization(T21, mode="standard", factor=1., x_mean = T21_lr_mean, x_std = T21_lr_std)
 
@@ -663,19 +672,24 @@ def sample_scales(rank, world_size, model_path, **kwargs):
         del T21, T21_pred, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std
 
         print(f"[dev:{rank}] Finished {key1}, {key2}", flush=True)
-
-    torch.save(T21_dict, save_path+f"T21_scales_{netG.model_name}_rank_{rank}.pth")
+    data_path = os.path.join(data_dir, f"T21_scales_{rank}.pth")
+    torch.save(T21_dict, data_path)
 
     if multi_gpu:
         destroy_process_group()
 
-def initialize_model_directory(rank, config):
+def get_paths(config):
+    print("test config print: ", config, flush=True)
     path = config["path"]
     model_name = config["name"].split(".")[0]
     model_dir = os.path.join(path, model_name)
     plot_dir = os.path.join(model_dir, "plots")
     data_dir = os.path.join(model_dir, "data")
     model_path = os.path.join(model_dir, config["name"])
+    return model_path, model_dir, plot_dir, data_dir
+
+def initialize_model_directory(rank, config):
+    model_path, model_dir, plot_dir, data_dir = get_paths(config)
     config_path = os.path.join(model_dir, "config.yml")
     if not os.path.exists(model_dir):
         if rank==0:
@@ -692,13 +706,19 @@ def initialize_model_directory(rank, config):
         if not os.path.exists(data_dir):
             if rank==0:
                 os.makedirs(data_dir)
-        #if config exists
         if not os.path.exists(config_path):
-            #save config
             if rank==0:
                 with open(config_path, 'w') as file:
                     yaml.dump(config, file)
         else:
+            #check if config file is the same
+            with open(config_path, 'r') as file:
+                config_old = yaml.safe_load(file)
+            if config_old != config:
+                if rank==0:
+                    print(f"Config file at {config_path} is different from the current config. Overwriting...", flush=True)
+                    with open(config_path, 'w') as file:
+                        yaml.dump(config, file)
             with open(config_path, 'r') as file:
                 config = yaml.safe_load(file)
         
@@ -714,4 +734,4 @@ def initialize_model_directory(rank, config):
         #else:
         #    if rank==0:
         #        print(f"No model file found at {model_path}. Starting from scratch.", flush=True)
-    return config, model_name, model_path, model_dir, plot_dir, data_dir
+    return config, model_path

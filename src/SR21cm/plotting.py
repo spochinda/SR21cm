@@ -1,3 +1,5 @@
+import os 
+
 import torch
 from torch.distributed import init_process_group, destroy_process_group
 
@@ -9,7 +11,7 @@ from matplotlib.gridspec import GridSpec as GS, GridSpecFromSubplotSpec as SGS
 from .utils import ddp_setup,calculate_power_spectrum
 
 @torch.no_grad()
-def plot_scales(rank, world_size, load_path, **kwargs):
+def plot_scales(rank, world_size, data_dir, plot_dir, **kwargs):
     """
     Plots the scales of the 21cm signal and its super-resolution predictions.
     This function loads the 21cm signal data and its super-resolution predictions from a given file path,
@@ -19,11 +21,11 @@ def plot_scales(rank, world_size, load_path, **kwargs):
     Parameters:
         rank (int): The rank of the current process in a distributed setup.
         world_size (int): The total number of processes in the distributed setup.
-        load_path (str): The file path to load the 21cm signal data and its super-resolution predictions.
+        data_dir (str): The directory containing the data files to load.
+        plot_dir (str): The directory to save the generated plots.
         **kwargs: Additional keyword arguments for customizing the plots.
             - fontsize (int): Font size for the plots. Default is 22.
             - use_tex (bool): Whether to use LaTeX for text rendering. Default is False.
-            - save_path (str): The file path to save the generated plots. Default is derived from load_path.
             - rasterized (bool): Whether to rasterize the images. Default is True.
             - slice_idx (int): The index of the slice to plot. Default is 64.
             - plot_format (str): The format to save the plots. Default is ".png".
@@ -36,7 +38,7 @@ def plot_scales(rank, world_size, load_path, **kwargs):
     """
     fontsize = kwargs.pop("fontsize", 22)
     use_tex = kwargs.pop("use_tex", False)
-    save_path = kwargs.pop("save_path", load_path.split(".")[0])
+
     rasterized = kwargs.pop("rasterized", True)
     slice_idx = kwargs.pop("slice_idx", 64)
     plot_format = kwargs.pop("plot_format", ".png")
@@ -45,11 +47,11 @@ def plot_scales(rank, world_size, load_path, **kwargs):
     if multi_gpu:
         ddp_setup(rank, world_size=world_size)#multi_gpu = world_size > 1
 
-    loaded_state = torch.load(load_path, map_location=torch.device(rank) if multi_gpu else "cpu")
+    data_path = os.path.join(data_dir, f"T21_scales_{rank}.pth")
+    loaded_state = torch.load(data_path, map_location=torch.device(rank) if multi_gpu else "cpu")
 
-    filename = load_path.split("/")[-1].split(".")[0]
-
-    print(f"[dev:{rank}] Loaded file: {filename}.pth", flush=True)
+    filename = data_path.split("/")[-1]
+    print(f"[dev:{rank}] Loaded file: {filename}", flush=True)
     
     T21_512 = loaded_state["T21_512"].cpu()
     T21_pred_512 = loaded_state["T21_pred_512"].cpu()
@@ -288,7 +290,8 @@ def plot_scales(rank, world_size, load_path, **kwargs):
     fig.align_ylabels(axes_dsq_256)
     fig.align_ylabels(axes_dsq_128)
 
-    plt.savefig(save_path+plot_format, bbox_inches='tight')
+    plot_path = os.path.join(plot_dir, f"T21_scales_{rank}")
+    plt.savefig(plot_path+plot_format, bbox_inches='tight')
 
     plt.close(fig)
 
