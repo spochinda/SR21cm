@@ -5,6 +5,7 @@ Generative models to produce super-resolved 21-cm brightness temperature simulat
 
 Install Python from source and sqlite for Jupyter to work (Also see https://stackoverflow.com/questions/56737495/how-to-install-sqlite3-for-python3-7-in-seperate-directory-on-linux-without-sudo)
 
+```sh
 $ mkdir -p ~/.localapps/src
 $ cd ~/.localapps/src
 $ # Download and build sqlite 3 (you might want to get a newer version)
@@ -24,12 +25,12 @@ $ ./configure --prefix=~/.localapps
 $ make
 $ make install
 
-$ makedir ~/venvs
+$ mkdir ~/venvs
 $ cd 
 $ .localapps/bin/python3 -m venv venvs/superres
 $ source venvs/superres/bin/activate
 $ pip install -r requirements.txt
-
+```
 
 
 
