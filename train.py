@@ -50,8 +50,11 @@ if __name__ == "__main__":
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
         
+        if config["profiling"]["nsys"]:
+            print("nsys is enabled;, have you ran the program with nsys: nsys profile --trace=cuda,osrt,nvtx,cudnn --stats=true --capture-range=cudaProfilerApi --capture-range-end=stop -s none --cuda-memory-usage=true python train.py ", flush=True)
+        
         name = config["name"]
-        for i in range(id+1,id+5):
+        for i in range(id+1,id+2):
             print(f"Training {i}...", flush=True)
         
             config["name"] = name + f"_{i}"
@@ -63,7 +66,6 @@ if __name__ == "__main__":
                             args=(
                                 world_size, 
                                 config, 
-                                False, #memory_profiling
                                 ), 
                             nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
                 #mp.spawn(train, args=(world_size, 10000, 1, n_models, channel, [1,2,4,8,16], cut_factor, 1., False, id), nprocs=world_size) #wordlsize, total_epochs, batch size (for minibatch)
@@ -71,22 +73,22 @@ if __name__ == "__main__":
             
                 print("Sampling scales...", flush=True)
                 sampling_time = time.time()
-                mp.spawn(sample_scales, 
-                            args=(
-                                world_size,
-                                config, #"/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
-                                ),
-                            nprocs=world_size)
+                #mp.spawn(sample_scales, 
+                #            args=(
+                #                world_size,
+                #                config, #"/home/sp2053/venvs/SR21cmtest/lib/python3.8/site-packages/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth",
+                #                ),
+                #            nprocs=world_size)
                 print(f"Sampling scales and plotting took {(time.time()-sampling_time)/3600:.2f}hrs", flush=True)
                 
-            model_path, model_dir, plot_dir, data_dir = get_paths(config)
-            mp.spawn(plot_scales, 
-                        args=(
-                            world_size, 
-                            data_dir,
-                            plot_dir,
-                            ), 
-                        nprocs=world_size)
+            #model_path, model_dir, plot_dir, data_dir = get_paths(config)
+            #mp.spawn(plot_scales, 
+            #            args=(
+            #                world_size, 
+            #                data_dir,
+            #                plot_dir,
+            #                ), 
+            #            nprocs=world_size)
             
 
             #cut_factor = 0 #sample 256

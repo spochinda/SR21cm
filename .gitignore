@@ -16,6 +16,7 @@ slurm*
 *.pickle
 out.txt
 src/SR21cm.egg-info
+src/SR21cm/__pycache__
 configs/*
 !configs/default.json
 !configs/default.yml

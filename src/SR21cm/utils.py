@@ -34,7 +34,7 @@ class CustomDataset(torch.utils.data.Dataset):
     def __init__(self, path_T21, path_IC, 
                  redshifts=[10,], IC_seeds=list(range(1000,1008)), 
                  Npix=256, batch_size=1, load_full_dataset=False,
-                 growth_factor=False, device='cpu'):
+                 growth_factor=False, device='cpu', **kwargs):
         self.device = device
         self.path_T21 = path_T21
         self.path_IC = path_IC
@@ -679,7 +679,7 @@ def sample_scales(rank, world_size, config, **kwargs):
         destroy_process_group()
 
 def get_paths(config):
-    print("test config print: ", config, flush=True)
+    print("path: ", config["path"])
     path = config["path"]
     model_name = config["name"].split(".")[0]
     model_dir = os.path.join(path, model_name)

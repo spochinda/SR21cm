@@ -56,7 +56,7 @@ class GaussianDiffusion(nn.Module):
         self.noise_schedule_opt = noise_schedule_opt
         self.loss_fn = loss_fn
         if self.loss_fn.use_amp:
-            self.scaler = torch.amp.GradScaler()
+            self.scaler = torch.cuda.amp.GradScaler()
         else:
             self.scaler = False
         self.sample = Sampler()

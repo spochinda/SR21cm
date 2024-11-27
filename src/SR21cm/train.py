@@ -1,4 +1,4 @@
-#import contextlib
+import contextlib
 import torch
 import torch.distributed
 import torch.utils
@@ -14,7 +14,7 @@ from .loss import VPLoss
 import os
 import time
 import psutil  # Import psutil
-from contextlib import nullcontext
+#from contextlib import nullcontext
 from tqdm import tqdm
 from datetime import datetime
 
@@ -27,7 +27,7 @@ def ddp_setup(rank: int, world_size: int):
         print("Did not find master address variable. Setting manually...")
         os.environ["MASTER_ADDR"] = "localhost"
 
-    os.environ["MASTER_PORT"] = "2595"#"12355" 
+    os.environ["MASTER_PORT"] = "2594"#"12355" 
     torch.cuda.set_device(rank)
     init_process_group(backend="gloo", rank=rank, world_size=world_size) #backend gloo for cpus? nccl for gpus
 
@@ -102,8 +102,11 @@ def train_step(netG, train_dataloader, config,
                 else:
                     labels = None
                 #with torch.cuda.amp.autocast(enabled=netG.loss_fn.use_amp) if netG.loss_fn.use_amp else nullcontext():
-                loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr], labels=labels, augment_pipe=None,
-                                        )
+                #torch.cuda.nvtx.range_push("iteration{}".format(len(netG.loss))) #hackathon
+                
+                if config["profiling"]["nsys"]: torch.cuda.nvtx.range_push("loss") #hackathon
+                loss = netG.loss_fn(net=netG, images=T21, conditionals=[delta, vbv, T21_lr], labels=labels, augment_pipe=None,)
+                if config["profiling"]["nsys"]: torch.cuda.nvtx.range_pop()
                     
                 avg_loss = avg_loss + loss #* T21.shape[0]  #add avg loss per mini-batch to accumulate total batch loss
                 #avg_loss = loss
@@ -113,33 +116,22 @@ def train_step(netG, train_dataloader, config,
                 #        print(name, param.grad, flush=True)
 
                 if netG.loss_fn.use_amp:
+                    if config["profiling"]["nsys"]: torch.cuda.nvtx.range_push("backward") #hackathon
                     netG.scaler.scale(loss).backward()
-                else:
-                    loss.backward()
-                #dev = torch.cuda.current_device()
-                #if dev == 0:
-                #    with torch.no_grad():
-                #        params_test = []
-                #        for i,(name, param) in enumerate(netG.model.named_parameters()):
-                #            g = param.grad.detach().cpu().numpy()
-                #            any_inf = np.any(np.isinf(g))
-                #            any_nan = np.any(np.isnan(g))
-                #            if any_inf or any_nan:
-                #                print(f"[dev:{dev}] -- {name}", flush=True)
-                #        params_test = np.array(params_test)
-                #        #All none?
-                #        print(f"[dev:{dev}] -- any None?", np.any(params_test==None), params_test, flush=True)
-                #        #Any inf?
-                #        #print(f"[dev:{dev}] -- any inf?", np.any(np.isinf(params_test)), flush=True)
-                #        #Any nan?
-                #        #print(f"[dev:{dev}] -- any nan?", np.any(np.isnan(params_test)), flush=True)
-                #torch.distributed.barrier()
-                if netG.loss_fn.use_amp:
+                    if config["profiling"]["nsys"]: torch.cuda.nvtx.range_pop()
+                    torch.cuda.nvtx.range_push("optimizer amp") #hackathon
                     netG.scaler.step(netG.optG)
                     netG.scaler.update()
+                    torch.cuda.nvtx.range_pop()
                 else:
+                    if config["profiling"]["nsys"]: torch.cuda.nvtx.range_push("backward") #hackathon
+                    loss.backward()
+                    if config["profiling"]["nsys"]: torch.cuda.nvtx.range_pop()
                     torch.nn.utils.clip_grad_norm_(netG.model.parameters(), 1.0)
+                    torch.cuda.nvtx.range_push("optimizer") #hackathon
                     netG.optG.step()
+                    torch.cuda.nvtx.range_pop() #hackathon
+                    
                 
                 netG.ema.update() #Update netG.model with exponential moving average
                 
@@ -344,7 +336,6 @@ def train(rank,
           #channel_mult = [1,2,4,8,16], #network_opt
           #cut_factor=1, #training_opt
           #norm_factor=1., #training_opt
-          memory_profiling=False, 
           #model_id=1,
           **kwargs):
     #train_models = 56
@@ -398,7 +389,7 @@ def train(rank,
     noise_schedule_opt = config["noise_schedule_opt"]
     
     #loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False)
-    loss_fn = VPLoss(config["loss_opt"])
+    loss_fn = VPLoss(**config["loss_opt"])
     netG = GaussianDiffusion(
             network=network,
             network_opt=network_opt,
@@ -528,110 +519,116 @@ def train(rank,
             with open('out.txt', 'a') as f:
                 print(torch.cuda.memory_summary(device=device), file=f)
 
-    if device.index == 0 and memory_profiling:
-        torch.cuda.memory._record_memory_history()
-        #prof.step()
+
+    
     if rank==0:
         current_time = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
         print(f"[{str(device)}] Starting training at {current_time}...", flush=True)
 
-    not_saved = 0
+    #not_saved = 0
     start_time_training = time.time()
-    #netG.scaler = torch.cuda.amp.GradScaler(enabled=netG.loss_fn.use_amp)
-    #if torch.cuda.current_device()==0 and netG.loss_fn.use_amp:  print("Loaded statedict: ", netG.scaler.state_dict(), flush=True)
 
-    for e in range(config["total_epochs"]): #if False:#       
-        
-        if device.index==0 or device.type=="cpu":
-            start_time = time.time()
-        
-        if True:
-            if multi_gpu:
-                train_sampler.set_epoch(len(netG.loss)) #
-            #avg_loss, labels = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=False, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
-            avg_loss, labels = train_step(netG=netG, train_dataloader=train_dataloader, config=config, device=device, multi_gpu = multi_gpu)
-            #if e%4==0:  netG.save_network(model_path)
+
+    if device.index == 0 and config["profiling"]["torch_snapshot"]:
+        torch.cuda.memory._record_memory_history()
+        #prof.step()
+
+    if config["profiling"]["nsys"]:
+        torch.cuda.cudart().cudaProfilerStart() #hackathon
+        nsys_stream = torch.cuda.Stream() #hackathon
+    
+    with torch.autograd.profiler.emit_nvtx(), torch.cuda.stream(nsys_stream) if config["profiling"]["nsys"] else contextlib.nullcontext():
+        for e in range(config["total_epochs"]): #if False:#       
             if device.index==0 or device.type=="cpu":
-                print("[{0}]: Epoch {1} in {2:.2f}s | ".format(device.type, len(netG.loss), time.time()-start_time) +
-                    #"loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
-                    "loss: {0:.4f}, mean(loss[-10:]): {1:.4f}, loss min: {2:.4f}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
-                    "learning rate: {0:.3e}, ".format(netG.optG.param_groups[0]['lr']) +
-                    "redshift: {0}".format(labels[0].item() if labels is not None else "None"), #labels is tensor([z])
-                    flush=True)
-                
-                #if netG.loss_fn.use_amp:
-                #    print("statedict: ", netG.scaler.state_dict(), flush=True)
+                start_time = time.time()
             
-            if netG.scheduler is not False:
-                netG.scheduler.step()
-
-            if device.index==0 and memory_profiling:
-                memory_path = os.path.join(data_dir, "memory_snap.pickle")
-                torch.cuda.memory._dump_snapshot(memory_path)
-                #prof.step()
-        
-        
-        validation_check_epoch = 1000#1500
-        
-        if False:# len(netG.loss)>=validation_check_epoch:
-            if len(netG.loss)==validation_check_epoch:
-                for g in netG.optG.param_groups:
-                    g['lr'] = 1e-4
-            
-            if len(netG.loss)%50==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
-                start_time_validation = time.time()
-                #loss_validation, tensor_dict_validation = sample_model_v3(rank, netG=netG, dataloader=test_dataloader, cut_factor=cut_factor, norm_factor = norm_factor, augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, device=device, multi_gpu=multi_gpu)
+            if True:
                 if multi_gpu:
-                    validation_dataloader.sampler.set_epoch(len(netG.loss))
-                loss_validation, tensor_dict_validation = sample_model_v3(rank, netG=netG, dataloader=validation_dataloader, cut_factor=0, norm_factor = norm_factor, augment=1, split_batch = False, sub_batch = 4, n_boxes = 1, num_steps=100, device=device, multi_gpu=multi_gpu)
-                validation_time = time.time()-start_time_validation
+                    train_sampler.set_epoch(len(netG.loss)) #
+                #avg_loss, labels = train_step(netG=netG, epoch=e, train_dataloader=train_dataloader, cut_factor=cut_factor, norm_factor=norm_factor, split_batch=False, sub_batch=4, one_box_per_epoch=True, device=device, multi_gpu=multi_gpu)
+                avg_loss, labels = train_step(netG=netG, train_dataloader=train_dataloader, config=config, device=device, multi_gpu = multi_gpu)
+                #if e%4==0:  netG.save_network(model_path)
+                if device.index==0 or device.type=="cpu":
+                    print("[{0}]: Epoch {1} in {2:.2f}s | ".format(device.type, len(netG.loss), time.time()-start_time) +
+                        #"loss: {0:,}, mean(loss[-10:]): {1:,}, loss min: {2:,}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
+                        "loss: {0:.4f}, mean(loss[-10:]): {1:.4f}, loss min: {2:.4f}, ".format(avg_loss,  torch.mean(torch.tensor(netG.loss[-10:])).item(), torch.min(torch.tensor(netG.loss)).item()) +
+                        "learning rate: {0:.3e}, ".format(netG.optG.param_groups[0]['lr']) +
+                        "redshift: {0}".format(labels[0].item() if labels is not None else "None"), #labels is tensor([z])
+                        flush=True)
                     
-                loss_validation_min = torch.min(torch.tensor(netG.loss_validation["loss_validation"])).item()
-                if loss_validation < loss_validation_min:
-                    if rank==0:
-                        
-                        path_plot = os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/"
-                        #plot_hist(T21_1=tensor_dict_validation["T21"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+f"hist_true_validation_during_{netG.model_name}.png", label="mean true-validation during")
-                        plot_sigmas(**tensor_dict_validation, netG=netG, path = path_plot,  quantiles=[0.16,0.5,0.84]) #[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
-                        
-                        print(f"[{device}] Validation took {validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} smaller than minimum={loss_validation_min**0.5:.3f}", flush=True)
-                        try:
-                            print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
-                        except Exception as e:
-                            print(e, flush=True)
-                    netG.save_network(fn+".pth")
-                    saved_network_str = netG.model.module.state_dict().__str__()
-                    
-                    not_saved = 0
-                    netG.loss_validation["loss_validation"].append(loss_validation)
+                    #if netG.loss_fn.use_amp:
+                    #    print("statedict: ", netG.scaler.state_dict(), flush=True)
+                
+                if netG.scheduler is not False:
+                    netG.scheduler.step()
 
-                else:
-                    not_saved = not_saved + 1
-                    if rank==0:
-                        print(f"[{device}] Not saving... validation time={validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} larger than minimum={loss_validation_min**0.5:.3f}. Not saved={not_saved}", flush=True)
+                if device.index==0 and config["profiling"]["torch_snapshot"]:
+                    memory_path = os.path.join(data_dir, "memory_snap.pickle")
+                    torch.cuda.memory._dump_snapshot(memory_path)
+                    #prof.step()
+            
+            
+            validation_check_epoch = 1000#1500
+            
+            if False:# len(netG.loss)>=validation_check_epoch:
+                if len(netG.loss)==validation_check_epoch:
+                    for g in netG.optG.param_groups:
+                        g['lr'] = 1e-4
+                
+                if len(netG.loss)%50==0 or avg_loss == torch.min(torch.tensor(netG.loss)).item():
+                    start_time_validation = time.time()
+                    #loss_validation, tensor_dict_validation = sample_model_v3(rank, netG=netG, dataloader=test_dataloader, cut_factor=cut_factor, norm_factor = norm_factor, augment=1, split_batch = True, sub_batch = 4, n_boxes = 1, num_steps=100, device=device, multi_gpu=multi_gpu)
+                    if multi_gpu:
+                        validation_dataloader.sampler.set_epoch(len(netG.loss))
+                    loss_validation, tensor_dict_validation = sample_model_v3(rank, netG=netG, dataloader=validation_dataloader, cut_factor=0, norm_factor = norm_factor, augment=1, split_batch = False, sub_batch = 4, n_boxes = 1, num_steps=100, device=device, multi_gpu=multi_gpu)
+                    validation_time = time.time()-start_time_validation
+                        
+                    loss_validation_min = torch.min(torch.tensor(netG.loss_validation["loss_validation"])).item()
+                    if loss_validation < loss_validation_min:
+                        if rank==0:
+                            
+                            path_plot = os.getcwd().split("/SR21cm")[0] + "/SR21cm/plots/vary_channels_nmodels_8/"
+                            #plot_hist(T21_1=tensor_dict_validation["T21"], T21_2=tensor_dict_validation["T21_pred"], path=path_plot+f"hist_true_validation_during_{netG.model_name}.png", label="mean true-validation during")
+                            plot_sigmas(**tensor_dict_validation, netG=netG, path = path_plot,  quantiles=[0.16,0.5,0.84]) #[(1-0.997)/2, (1-0.954)/2, 0.16, 0.5, 0.84, 1 - (1-0.954)/2, 1 - (1-0.997)/2])
+                            
+                            print(f"[{device}] Validation took {validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} smaller than minimum={loss_validation_min**0.5:.3f}", flush=True)
+                            try:
+                                print("Weights: ", netG.model.module.enc["128_conv_in4_out4"].weight[0,0,0], flush=True)
+                            except Exception as e:
+                                print(e, flush=True)
+                        netG.save_network(fn+".pth")
+                        saved_network_str = netG.model.module.state_dict().__str__()
+                        
+                        not_saved = 0
+                        netG.loss_validation["loss_validation"].append(loss_validation)
 
-        
-        #every 100 epochs after epoch 2000 save network
-        if len(netG.loss) >= 1000 and len(netG.loss)%100==0:
-            if len(netG.loss) == 1000:
-                for g in netG.optG.param_groups:
-                            g['lr'] = 1e-4
-            netG.save_network(model_path)
-            if rank==0:
-                print(f"[{device}] Saved network at {model_path}", flush=True)
-        #abort if last save was more than n validation tests ago
-        #if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
-        #    if rank==0:
-        #        print("No improvement in 20 validation tests. Saving test data...", flush=True)
-        if (time.time()-start_time_training > 3*60*60):
-            if rank==0:
-                print("12 hours passed. Aborting training...", flush=True)
-            break
+                    else:
+                        not_saved = not_saved + 1
+                        if rank==0:
+                            print(f"[{device}] Not saving... validation time={validation_time:.2f}s, validation rmse={loss_validation**0.5:.3f} larger than minimum={loss_validation_min**0.5:.3f}. Not saved={not_saved}", flush=True)
+
+            
+            #every 100 epochs after epoch 2000 save network
+            if len(netG.loss) >= 1000 and len(netG.loss)%100==0:
+                if len(netG.loss) == 1000:
+                    for g in netG.optG.param_groups:
+                                g['lr'] = 1e-4
+                netG.save_network(model_path)
+                if rank==0:
+                    print(f"[{device}] Saved network at {model_path}", flush=True)
+            #abort if last save was more than n validation tests ago
+            #if False:#(not_saved>=20) or (len(netG.loss) == total_epochs-1):
+            #    if rank==0:
+            #        print("No improvement in 20 validation tests. Saving test data...", flush=True)
+            if (time.time()-start_time_training > 3*60*60):
+                if rank==0:
+                    print("12 hours passed. Aborting training...", flush=True)
+                break
 
 
 
     
-    if device.index==0 and memory_profiling:
+    if device.index==0 and config["profiling"]["torch_snapshot"]:
         torch.cuda.memory._record_memory_history(enabled=None)
 
     if multi_gpu:#world_size > 1:

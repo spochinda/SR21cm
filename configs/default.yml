@@ -1,13 +1,13 @@
  
 name: test2 #DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth #DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_4_normfactor1.pth
-path: /home/sp2053/rds/hpc-work/SR21cm/trained_models #/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/
-total_epochs: 10000 #000
+path: /home/dt004/dt004/dc-poch1/trained_models #/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/
+total_epochs: 2 #000
 network_opt:
     img_resolution: 128
     in_channels: 4
     out_channels: 1
     label_dim: 0
-    model_channels: 8
+    model_channels: 8 #8
     channel_mult:
         - 1
         - 2
@@ -33,23 +33,23 @@ noise_schedule_opt:
 loss_opt:
     beta_max: 20.0
     beta_min: 0.1
-    epsilon: 1.e-05
-    use_amp: true #false
+    epsilon_t: 1.e-05
+    use_amp: false #false
 seed: 0
 datasets:
     train:
-        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
-        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        path_T21: /home/dt004/dt004/dc-poch1/varying_IC/T21_cubes/
+        path_IC: /home/dt004/dt004/dc-poch1/varying_IC/IC_cubes/
         redshifts:
             - 10
         IC_seeds:
             - 0
         Npix: 256
         batch_size: 1
-        load_full_dataset: true
+        load_full_dataset: false #true
     validation:
-        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
-        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        path_T21: /home/dt004/dt004/dc-poch1/varying_IC/T21_cubes/
+        path_IC: /home/dt004/dt004/dc-poch1/varying_IC/IC_cubes/
         redshifts:
             - 10
         IC_seeds:
@@ -58,8 +58,8 @@ datasets:
         batch_size: 1
         load_full_dataset: false
     test:
-        path_T21: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/T21_cubes/
-        path_IC: /home/sp2053/rds/rds-cosmicdawnruns2-PJtLerV8oy0/JVD_diffusion_sims/varying_IC/IC_cubes/
+        path_T21: /home/dt004/dt004/dc-poch1/varying_IC/T21_cubes/
+        path_IC: /home/dt004/dt004/dc-poch1/varying_IC/IC_cubes/
         redshifts:
             - 10
         IC_seeds:
@@ -72,3 +72,6 @@ data_preprocess:
     scale_factor: 4
     norm_factor: 1.0
     n_augmentation: 1
+profiling:
+    nsys: true
+    torch_snapshot: false

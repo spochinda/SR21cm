@@ -7,3 +7,4 @@ matplotlib
 tqdm
 torch-ema
 psutil
+pyyaml
