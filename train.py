@@ -44,16 +44,18 @@ if __name__ == "__main__":
 
     
     print("PyTorch version: ", torch.__version__, flush=True)
+
+    if config["profiling"]["nsys"]:
+        print("nsys is enabled;, have you ran the program with nsys: nsys profile --trace=cuda,osrt,nvtx,cudnn --stats=true --capture-range=cudaProfilerApi --capture-range-end=stop -s none --cuda-memory-usage=true python train.py ", flush=True)
+
     if multi_gpu:
         print("CUDA version: ", torch.version.cuda)
         print("Using multi_gpu", flush=True)
         for i in range(torch.cuda.device_count()):
             print("Device {0}: ".format(i), torch.cuda.get_device_properties(i).name)
         
-        if config["profiling"]["nsys"]:
-            print("nsys is enabled;, have you ran the program with nsys: nsys profile --trace=cuda,osrt,nvtx,cudnn --stats=true --capture-range=cudaProfilerApi --capture-range-end=stop -s none --cuda-memory-usage=true python train.py ", flush=True)
-        
         name = config["name"]
+        
         for i in range(id+1,id+2):
             print(f"Training {i}...", flush=True)
         
@@ -99,7 +101,8 @@ if __name__ == "__main__":
     else:
         print("Not using multi_gpu",flush=True)
         #train(rank=0, world_size=world_size, total_epochs=1, batch_size=1, train_models=56, model_channels=4, channel_mult=[1,2,4,8,16], cut_factor=1, norm_factor=1., memory_profiling=False, model_id=4)#2*4)    
-        train(rank=0, world_size=world_size, config=config, memory_profiling=False, model_id=4)#2*4)    
+        #train(rank=0, world_size=world_size, config=config, memory_profiling=False, model_id=4)#2*4)    
+        train(rank=0, world_size=world_size, config=config)
         #sample_scales(rank=0, world_size=world_size, model_path="/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/model_6/DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth")
         #plot_scales(rank=0, world_size=world_size, load_path="/Users/simonpochinda/Documents/PhD/SR21cm/analysis/model_6/T21_scales_0.pth")
         

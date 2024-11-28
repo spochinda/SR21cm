@@ -24,25 +24,27 @@ class GaussianDiffusion(nn.Module):
         loss_fn = None,
         learning_rate=1e-4,
         scheduler=False,
-        mp = False,
         rank = 0,
     ):
         super().__init__()
         
         self.rank = rank
+        self.world_size = torch.cuda.device_count()
         self.multi_gpu = torch.cuda.device_count() > 1 
 
-        if self.multi_gpu:
+        if self.multi_gpu and torch.cuda.is_available():
             self.device = torch.device(f'cuda:{self.rank}')
+        elif self.world_size==1 and torch.cuda.is_available():
+            self.device = torch.device(f'cuda:0')
         else:
-            self.device = "cpu"
+            self.device = torch.device("cpu")
         
         
         self.network = network
         self.network_opt = network_opt
         self.model = self.network(**self.network_opt).to(self.device)
         #init_weights(self.model, init_type='orthogonal')
-        if mp and self.multi_gpu:
+        if self.multi_gpu:
             self.model = DDP(self.model, device_ids=[rank])
 
         self.optG = torch.optim.Adam(self.model.parameters(), lr = learning_rate,) #weight_decay=1e-5)
@@ -89,7 +91,7 @@ class GaussianDiffusion(nn.Module):
                     f = path
                     )
         else:
-            if True:#self.rank == 0:
+            if self.device.index == 0:
                 print("Saving model!", flush=True)
                 torch.save(
                     obj = dict(

@@ -34,7 +34,7 @@ loss_opt:
     beta_max: 20.0
     beta_min: 0.1
     epsilon_t: 1.e-05
-    use_amp: false #false
+    use_amp: true #false
 seed: 0
 datasets:
     train:

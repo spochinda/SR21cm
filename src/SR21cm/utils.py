@@ -155,16 +155,7 @@ class CustomDataset(torch.utils.data.Dataset):
 
             label = torch.as_tensor(label, dtype=torch.float32, device='cpu')
             labels = torch.cat([labels, label], dim=0)
-            
-
-            if torch.cuda.current_device() == 0:
-                try:
-                    #print every 10% loaded
-                    if index % (len(self.df)//10) == 0:
-                        print(f"Loaded {index}/{len(self.df)}", flush=True)
-                except:
-                    pass
-            
+                        
         self.dataset = torch.utils.data.TensorDataset(T21, delta, vbv, labels)
         
         return self.dataset

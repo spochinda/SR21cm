@@ -348,6 +348,8 @@ def train(rank,
     if multi_gpu:
         device = torch.device(f'cuda:{rank}')
         ddp_setup(rank, world_size=world_size)
+    elif world_size==1 and torch.cuda.is_available():
+        device = torch.device("cuda:0")
     else:
         device = torch.device("cpu")
     
@@ -364,31 +366,11 @@ def train(rank,
     #                embedding_type='positional', channel_mult_noise=1, encoder_type='standard', decoder_type='standard', resample_filter=[1,1], 
     #                )
     network_opt = config["network_opt"]
-    #img_resolution=64, channel_mult=[1,2,4,8,16], num_blocks = 4, attn_resolutions=[4,], mid_attn=True, largest model to pass through 512 on 80GB and 40GB
-    #512 compatible:
-    #channels 4, 1,2,8,8,16
-    #channels 4, 1,2,8,16,
-    #channels 4, 1,2,16,64
-    #channels 4, 1-2-32-64-128
-    #channels 4, 1,2,8,32,128, attn_res [8,] best
-    #channels 4, 1,2,4,8,16, attn_res [8,] best works on 40 GB
-    
-    #256 compatible:
-    #channels 32, 1,2,4,8,16 attn_res [8,] works on 40GB
-    #channels 32, 1,2,8,32,128 attn_res [8,] OOM even on 80GB
-    #channels 16, 1,2,8,32,128 attn_res [8,] on 80GB passed
-    #channels 16, 1,2,4,8,16 attn_res [8,] on 80GB passed
 
-    #network = UNet
     network = SongUNet
-    
-    #noise_schedule_opt = {'schedule_type': "linear", 'schedule_opt': {"timesteps": 1000, "beta_start": 0.0001, "beta_end": 0.02}} 
-    #noise_schedule_opt = {'schedule_type': "cosine", 'schedule_opt': {"timesteps": 1000, "s" : 0.008}} 
-    #noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
-    #noise_schedule_opt = {'schedule_type': "VPSDE", 'schedule_opt': {"timesteps": 1000, "beta_min" : 0.1, "beta_max": 20.0}}  
+
     noise_schedule_opt = config["noise_schedule_opt"]
     
-    #loss_fn = VPLoss(beta_max=20., beta_min=0.1, epsilon_t=1e-5, use_amp=False)
     loss_fn = VPLoss(**config["loss_opt"])
     netG = GaussianDiffusion(
             network=network,
@@ -397,7 +379,6 @@ def train(rank,
             loss_fn = loss_fn,
             learning_rate=1e-3,
             scheduler=False,
-            mp=True,
             rank=rank,
         )
     #if torch.cuda.current_device()==0 and netG.loss_fn.use_amp:  print("Initial statedict: ", netG.scaler.state_dict(), flush=True)
