@@ -20,3 +20,5 @@ src/SR21cm/__pycache__
 configs/*
 !configs/default.json
 !configs/default.yml
+#all pycache
+**__pycache__*
