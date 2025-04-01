@@ -5,6 +5,7 @@ from einops import repeat
 from SR21cm.utils import get_subcubes, normalize, augment_dataset
 try:
     from mamba_ssm.ops.selective_scan_interface import selective_scan_fn, selective_scan_ref
+    test_mode = False
 except Exception as e:
     print(e)
     print("Selective scan not available, using reference implementation and enabling test mode")

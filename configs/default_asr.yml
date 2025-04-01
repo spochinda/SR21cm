@@ -1,19 +1,19 @@
  
 name: test_asr.pth #DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_8_normfactor1.pth #DDPMpp_standard_channels_8_mult_1-2-4-8-16_tts_1_VPSDE_4_normfactor1.pth
-path: /Users/simonpochinda/Documents/PhD/SR21cm/trained_models #/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/
-total_epochs: 5 #000
+path: /home/sp2053/rds/hpc-work/SR21cm/trained_models #/Users/simonpochinda/Documents/PhD/SR21cm/trained_models/
+total_epochs: 1000 #000
 encoder: "MambaIREncoder"
 encoder_opt:
     inp_channels: 1
     out_channels: 1
-    dim: 4
+    dim: 8
     num_blocks: [4, 4, 4, 4]
     num_refinement_blocks: 4
     mlp_ratio: 1.
     bias: false
 network: "ArSSR"
 network_opt:
-    feature_dim: 64 
+    feature_dim: 128 
     decoder_depth: 4
     decoder_width: 32
 optimizer: "Adam"
@@ -22,8 +22,8 @@ optimizer_opt:
 seed: 0
 datasets:
     train:
-        path_T21: /Users/simonpochinda/Documents/PhD/dataset/varying_IC/T21_cubes/
-        path_IC: /Users/simonpochinda/Documents/PhD/dataset/varying_IC/IC_cubes/
+        path_T21: /home/sp2053/rds/hpc-work/dataset/varying_IC/T21_cubes/
+        path_IC: /home/sp2053/rds/hpc-work/dataset/varying_IC/IC_cubes/
         redshifts:
             - 10
         IC_seeds:
@@ -32,32 +32,32 @@ datasets:
         batch_size: 1
         load_full_dataset: true
     validation:
-        path_T21: /Users/simonpochinda/Documents/PhD/dataset/varying_IC/T21_cubes/
-        path_IC: /Users/simonpochinda/Documents/PhD/dataset/varying_IC/IC_cubes/
+        path_T21: /home/sp2053/rds/hpc-work/dataset/varying_IC/T21_cubes/
+        path_IC: /home/sp2053/rds/hpc-work/dataset/varying_IC/IC_cubes/
         redshifts:
             - 10
         IC_seeds:
-            - 56
+            - 2
         Npix: 256
         batch_size: 1
         load_full_dataset: false
     test:
-        path_T21: /Users/simonpochinda/Documents/PhD/dataset/varying_IC/T21_cubes/
-        path_IC: /Users/simonpochinda/Documents/PhD/dataset/varying_IC/IC_cubes/
+        path_T21: /home/sp2053/rds/hpc-work/dataset/varying_IC/T21_cubes/
+        path_IC: /home/sp2053/rds/hpc-work/dataset/varying_IC/IC_cubes/
         redshifts:
             - 10
         IC_seeds:
-            - 72
+            - 4
         Npix: 256
         batch_size: 1
         load_full_dataset: false
 data_preprocess:
-    cut_factor: 1
+    cut_factor: 0
     norm_factor: 1.0
     n_augment: 1
-    one_box: true
+    one_box: false
     scale_min: 1.1
-    scale_max: 4
+    scale_max: 4.5
 profiling:
     nsys: false
     torch_snapshot: false

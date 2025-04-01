@@ -18,7 +18,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
 
     # Add the optional arguments
-    parser.add_argument("--config", type=str, default="/Users/simonpochinda/Documents/PhD/SR21cm/configs/default_asr.yml", help="config file")
+    parser.add_argument("--config", type=str, default="/home/sp2053/rds/hpc-work/SR21cm/configs/default_asr.yml", help="config file")
 
     # Parse the command-line arguments
     args = parser.parse_args()

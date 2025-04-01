@@ -765,7 +765,9 @@ class ArSSR(nn.Module):
             {h,w,d}: dimensional size of LR input image
         """
         # extract feature map from LR image
-        feature_map = self.encoder(img_lr)  # 
+        feature_map = torch.utils.checkpoint.checkpoint(self.encoder, img_lr)  # 
+        #feature_map =  self.encoder(img_lr)
+
 
         # generate feature vector for coordinate through trilinear interpolation (Equ. 4 & Fig. 3).
         coords = xyz_hr.flip(-1)
@@ -799,7 +801,7 @@ class ArSSR(nn.Module):
                 print("Saving model!", flush=True)
                 torch.save(
                     obj = dict(
-                        model = self.module.state_dict(), 
+                        model = self.state_dict(), 
                         optimizer = self.optG.state_dict(), 
                         loss = self.loss,
                         loss_validation = self.loss_validation,
@@ -818,7 +820,7 @@ class ArSSR(nn.Module):
         self.loss = loaded_state['loss']
         self.loss_validation = loaded_state['loss_validation']
 
-    
+@torch.no_grad()    
 def make_coord(shape, ranges=None, flatten=True):
     """
     Make coordinates at grid centers.

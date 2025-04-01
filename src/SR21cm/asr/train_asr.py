@@ -47,21 +47,26 @@ def train_step(model, train_dataloader, config, device="cpu", multi_gpu = False,
         
         T21, delta, vbv, T21_lr, T21_lr_mean, T21_lr_std, scale = data_preprocess(T21=T21_, delta=delta_, vbv=vbv_, **config["data_preprocess"])
         b,c,*d = T21.shape
-        xyz_hr = model_asr.make_coord(d, ranges=None, flatten=False)
+        xyz_hr = model_asr.make_coord(d, ranges=None, flatten=False).to(device)
         xyz_hr = xyz_hr.view(1, -1, 3)
         xyz_hr = xyz_hr.repeat(b, 1, 1)
         
-        model.optG.zero_grad()
+        
+        #with torch.autocast(device_type=device.type):
         T21_pred = model(img_lr=T21_lr, xyz_hr=xyz_hr) * T21_lr_std + T21_lr_mean
         T21 = T21 * T21_lr_std + T21_lr_mean
         loss = torch.mean((T21_pred-T21)**2)
+            
+        model.optG.zero_grad()
+        #model.scaler.scale(loss).backward()
         loss.backward()
         model.optG.step()
             
         
     
     if multi_gpu:
-        torch.distributed.all_reduce(tensor=loss, op=torch.distributed.ReduceOp.AVG) #total loss=sum(average total batch loss per gpu)
+        torch.distributed.all_reduce(tensor=loss, op=torch.distributed.ReduceOp.SUM)
+        loss = loss / torch.distributed.get_world_size()
     
     loss = loss.detach().cpu().item()**0.5
 
@@ -70,7 +75,7 @@ def train_step(model, train_dataloader, config, device="cpu", multi_gpu = False,
     return loss, labels, scale
 
 
-
+#nsys profile --trace=cuda,nvtx,cudnn --export=none --force-overwrite true -o report6_ckpt_noamp /home/sp2053/venvs/ASR21cm/bin/python /home/sp2053/rds/hpc-work/SR21cm/train_asr.py
 def train(rank, 
           world_size=0, 
           config = None,
@@ -93,9 +98,10 @@ def train(rank,
 
     #optimizer and model
     encoder = getattr(model_asr, config["encoder"])(**config["encoder_opt"])
-    model = getattr(model_asr, config["network"])(**config["network_opt"], encoder=encoder)
+    model = getattr(model_asr, config["network"])(**config["network_opt"], encoder=encoder, device=device)
     model.optG = getattr(torch.optim, config["optimizer"])(model.parameters(), **config["optimizer_opt"])
     model.multi_gpu = multi_gpu
+    model.to(device)
     #generate seed to share across GPUs
     if multi_gpu:
         seed = torch.randint(0, 1420, (1,)) if config["seed"] is None else torch.tensor(config["seed"])
@@ -113,32 +119,32 @@ def train(rank,
         print(f"[{str(device)}] Starting training at {current_time}...", flush=True)
     start_time_training = time.time()
 
-    
-    for e in range(config["total_epochs"]): #if False:#       
-        if device.index==0 or device.type=="cpu":
-            start_time = time.time()
+    model.scaler = torch.amp.GradScaler("cuda") ## for amp
+    with torch.autograd.profiler.emit_nvtx():
+        for e in range(config["total_epochs"]): #if False:#       
+            if device.index==0 or device.type=="cpu":
+                start_time = time.time()
 
-        loss, labels, scale = train_step(model=model, train_dataloader=train_dataloader, config=config, device=device, multi_gpu = multi_gpu)
-        if device.index==0 or device.type=="cpu":
-            print("[{0}]: Iteration in {1:.2f}s | ".format(device.type, time.time()-start_time) +
-                "loss: {0:.4f}, ".format(loss) +
-                "redshift: {0}".format(labels[0].item() if labels is not None else "None"),
-                "scale: {0:.2f}".format(scale),
-                flush=True)
-
-        #every 100 epochs after epoch 2000 save network
-        if len(model.loss) >= 1000 and len(model.loss)%100==0:
-            if len(model.loss) == 1000:
-                for g in model.optG.param_groups:
-                            g['lr'] = 1e-4
-            model_dir = os.path.join(config["path"], config["name"])
-            model.save_network(path = model_dir)
-            if rank==0:
-                print(f"[{device}] Saved network at {model_dir}", flush=True)
-        if (time.time()-start_time_training > 3*60*60):
-            if rank==0:
-                print("3 hours passed. Aborting training...", flush=True)
-            break
+            loss, labels, scale = train_step(model=model, train_dataloader=train_dataloader, config=config, device=device, multi_gpu = multi_gpu)
+            if device.index==0 or device.type=="cpu":
+                print(f"[{device.type}]: Epoch {e} in {time.time()-start_time:.2f}s | " +
+                    "loss: {0:.4f}, ".format(loss) +
+                    "redshift: {0}".format(labels[0].item() if labels is not None else "None"),
+                    "scale: {0:.2f}".format(scale),
+                    flush=True)
+            #every 100 epochs after epoch 2000 save network
+            if len(model.loss) >= 500 and len(model.loss)%100==0:
+                if len(model.loss) == 1000:
+                    for g in model.optG.param_groups:
+                                g['lr'] = 1e-3
+                model_dir = os.path.join(config["path"], config["name"])
+                model.save_network(path = model_dir)
+                if rank==0:
+                    print(f"[{device}] Saved network at {model_dir}", flush=True)
+            if (time.time()-start_time_training > 3*60*60):
+                if rank==0:
+                    print("3 hours passed. Aborting training...", flush=True)
+                break
 
     if multi_gpu:#world_size > 1:
         torch.distributed.barrier()
